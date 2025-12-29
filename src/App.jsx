@@ -11,16 +11,21 @@ function App() {
     title: '',
     message: '',
     type: 'alert',
+    inputValue: '',
     onConfirm: null
   })
 
   const inputRef = useRef(null)
+  const inputModalRef = useRef(null)
 
   useEffect(() => {
     if(inputRef.current && !modal.show) {
       inputRef.current.focus();
     }
-  }, [modal.show]);
+    if(modal.show && modal.type === 'input' && inputModalRef.current) {
+      setTimeout(() => inputModalRef.current.focus(), 100);
+    }
+  }, [modal.show, modal.type]);
 
   const fecharModal = () => {
     setModal({ ...modal, show: false });
@@ -32,6 +37,7 @@ function App() {
       title: titulo,
       message: mensagem,
       type: 'alert',
+      inputValue: '',
       onConfirm: null
     });
   }
@@ -42,8 +48,27 @@ function App() {
       title: titulo,
       message: mensagem,
       type: 'confirm',
+      inputValue: '',
       onConfirm: () => {
         acaoConfirmar();
+        fecharModal();
+      }
+    });
+  }
+
+  const abrirSolicitacaoCracha = (acaoAoConfirmar) => {
+    setModal({
+      show: true,
+      title: 'Identificação do Responsável',
+      message: 'Para finalizar, informe o número do seu crachá:',
+      type: 'input',
+      inputValue: '',
+      onConfirm: (valorDigitado) => {
+        if (!valorDigitado || !valorDigitado.trim()) {
+            alert("Por favor, informe o crachá.");
+            return; 
+        }
+        acaoAoConfirmar(valorDigitado);
         fecharModal();
       }
     });
@@ -82,24 +107,30 @@ function App() {
     );
   }
 
-  const gerarRelatorio = () => {
+  const iniciarGeracaoRelatorio = () => {
     if (inventario.length === 0) {
       abrirAlerta('Lista Vazia', 'Sem dados para gerar relatório.'); 
       return;
     }
-    let csvContent = "data:text/csv;charset=utf-8,Patrimonio;Data e Hora\n" 
-      + inventario.map(e => `${e.patrimonio};${e.dataHora}`).join("\n");
+    abrirSolicitacaoCracha((cracha) => {
+        baixarCSV(cracha);
+    });
+  }
+
+  const baixarCSV = (cracha) => {
+    let csvContent = "data:text/csv;charset=utf-8,Patrimonio;Data e Hora;Cracha Responsavel\n" 
+      + inventario.map(e => `${e.patrimonio};${e.dataHora};${cracha}`).join("\n");
+      
     const link = document.createElement("a");
     link.href = encodeURI(csvContent);
-    link.download = `inventario_${new Date().getTime()}.csv`;
+    link.download = `inventario_${cracha}_${new Date().getTime()}.csv`; // Incluí o crachá no nome do arquivo também
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   }
 
   return (
-    <div className="min-vh-100 bg-light d-flex flex-column justify-content-start align-items-center pt-5 position-relative">
-      
+    <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-top pt-5 position-relative">
       {modal.show && (
         <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered">
@@ -111,16 +142,43 @@ function App() {
                 </h5>
                 <button type="button" className={`btn-close ${modal.type === 'confirm' ? 'btn-close-white' : ''}`} onClick={fecharModal} aria-label="Close"></button>
               </div>
+              
               <div className="modal-body p-4 fs-5 text-secondary text-center">
-                {modal.message}
+                <p>{modal.message}</p>
+                
+                {modal.type === 'input' && (
+                  <input 
+                    ref={inputModalRef}
+                    type="text" 
+                    className="form-control form-control-lg mt-3 text-center"
+                    placeholder="Digite o nº do crachá"
+                    value={modal.inputValue}
+                    onChange={(e) => setModal({...modal, inputValue: e.target.value})}
+                    onKeyDown={(e) => {
+                        if(e.key === 'Enter') modal.onConfirm(modal.inputValue);
+                    }}
+                  />
+                )}
               </div>
+
               <div className="modal-footer border-0 justify-content-center pb-4">
                 <button type="button" className="btn btn-secondary px-4" onClick={fecharModal}>
-                  {modal.type === 'confirm' ? 'Cancelar' : 'Fechar'}
+                  Cancelar
                 </button>
+                
                 {modal.type === 'confirm' && (
                   <button type="button" className="btn btn-danger px-4" onClick={modal.onConfirm}>
                     Sim, Limpar
+                  </button>
+                )}
+                
+                {modal.type === 'input' && (
+                  <button 
+                    type="button" 
+                    className="btn btn-videplast px-4" 
+                    onClick={() => modal.onConfirm(modal.inputValue)}
+                  >
+                    Confirmar e Baixar
                   </button>
                 )}
               </div>
@@ -166,7 +224,7 @@ function App() {
 
           <div className="d-flex justify-content-center align-items-center gap-3 mb-4 flex-wrap">
             <button 
-              onClick={gerarRelatorio} 
+              onClick={iniciarGeracaoRelatorio} 
               className="btn btn-outline-videplast d-flex align-items-center gap-2"
             >
               📄 Gerar Relatórios (CSV)
