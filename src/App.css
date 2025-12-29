@@ -56,3 +56,11 @@ html, body, #root {
   background-color: #343A40 !important;
   border-color: #454d55 !important;
 }
+
+.btn-link {
+  font-size: 0.9rem;
+}
+
+.btn-link:hover {
+  color: #D32F2F !important;
+}
