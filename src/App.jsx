@@ -4,7 +4,11 @@ import './App.css'
 
 function App() {
   const [codigo, setCodigo] = useState('')
-  const [inventario, setInventario] = useState([])
+  
+  const [inventario, setInventario] = useState(() => {
+    const saved = sessionStorage.getItem('inventario_videplast');
+    return saved ? JSON.parse(saved) : [];
+  })
   
   const [modal, setModal] = useState({
     show: false,
@@ -17,6 +21,10 @@ function App() {
 
   const inputRef = useRef(null)
   const inputModalRef = useRef(null)
+
+  useEffect(() => {
+    sessionStorage.setItem('inventario_videplast', JSON.stringify(inventario));
+  }, [inventario]);
 
   useEffect(() => {
     if(inputRef.current && !modal.show) {
@@ -65,7 +73,7 @@ function App() {
       inputValue: '',
       onConfirm: (valorDigitado) => {
         if (!valorDigitado || !valorDigitado.trim()) {
-            alert("Por favor, informe o crachá.");
+            alert("Por favor, informe o crachá."); 
             return; 
         }
         acaoAoConfirmar(valorDigitado);
@@ -123,14 +131,15 @@ function App() {
       
     const link = document.createElement("a");
     link.href = encodeURI(csvContent);
-    link.download = `inventario_${cracha}_${new Date().getTime()}.csv`; // Incluí o crachá no nome do arquivo também
+    link.download = `inventario_${cracha}_${new Date().getTime()}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   }
 
   return (
-    <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-top pt-5 position-relative">
+    <div className="min-vh-100 bg-light d-flex flex-column justify-content-start align-items-center pt-5 position-relative">
+      
       {modal.show && (
         <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered">
