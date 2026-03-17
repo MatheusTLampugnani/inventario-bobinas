@@ -567,7 +567,7 @@ function App() {
           {/* GERAÇAO DE RELATORIO */}
           <div className="d-flex flex-column flex-sm-row justify-content-center gap-2 mb-4">
             <button onClick={gerarRelatorio} className="btn btn-outline-danger d-flex align-items-center justify-content-center gap-2 w-100 py-2 fw-semibold">
-              <i className="bi bi-file-earmark-excel"></i> Exportar Relatório (Backup)
+              <i className="bi bi-file-earmark-excel"></i> Exportar Relatório
             </button>
           </div>
           
