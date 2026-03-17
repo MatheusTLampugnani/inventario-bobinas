@@ -2,11 +2,11 @@ import logoVideplast from '../assets/videplast-brand.png'
 
 const Header = () => {
   return (
-    <header className="container text-center py-4">
+    <header className="app-header text-center">
       <img 
         src={logoVideplast} 
         alt="Videplast" 
-        className="img-fluid mb-3 header-logo" 
+        className="logo" 
       />
     </header>
   )

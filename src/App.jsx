@@ -119,11 +119,21 @@ function App() {
 
   // LÓGICA DE SESSÃO DO BANCO
   const garantirSessao = async () => {
-    if (sessaoId) return sessaoId;
+    if (sessaoId) {
+      const { data } = await supabase
+        .from('sessoes_inventario')
+        .select('id')
+        .eq('id', sessaoId)
+        .maybeSingle();
+
+      if (data) {
+        return sessaoId; 
+      }
+    }
 
     const { data, error } = await supabase
       .from('sessoes_inventario')
-      .insert([{ cracha_importacao: crachaLogado, status: 'Não importado CSV' }])
+      .insert([{ cracha_importacao: crachaLogado, status: 'Em andamento' }])
       .select('id')
       .single();
 
@@ -365,39 +375,39 @@ function App() {
   // TELA DE LOGIN
   if (!crachaLogado) {
     return (
-      <div className="min-vh-100 bg-light d-flex justify-content-center align-items-center position-relative px-3">
+      <div className="min-vh-100 bg-light d-flex justify-content-center align-items-center position-relative px-3 py-4">
         {modal.show && (
           <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
-            <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
               <div className="modal-content shadow border-0">
                 <div className="modal-header border-0 bg-dark text-white">
                   <h5 className="modal-title fw-bold">Aviso</h5>
                   <button type="button" className="btn-close btn-close-white" onClick={fecharModal}></button>
                 </div>
-                <div className="modal-body p-4 fs-5 text-secondary text-center">
+                <div className="modal-body p-4 fs-6 text-secondary text-center">
                   <p className="mb-0">{modal.message}</p>
                 </div>
                 <div className="modal-footer border-0 justify-content-center pb-4">
-                  <button type="button" className="btn btn-secondary px-4" onClick={fecharModal}>Fechar</button>
+                  <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto" onClick={fecharModal}>Fechar</button>
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        <div className="card shadow-lg border-0 p-4 p-md-5" style={{ maxWidth: '450px', width: '100%', borderRadius: '12px' }}>
-          <div className="text-center mb-5">
-            <img src={logoVideplast} alt="Videplast" className="img-fluid mb-4" style={{maxHeight: '70px'}} />
-            <h4 className="fw-bold text-dark">Inventário de Bobinas</h4>
-            <p className="text-muted">Identifique-se para iniciar a contagem</p>
+        <div className="card shadow-lg border-0 p-4 p-md-5 w-100" style={{ maxWidth: '450px', borderRadius: '12px' }}>
+          <div className="text-center mb-4 mb-md-5">
+            <img src={logoVideplast} alt="Videplast" className="img-fluid mb-4" style={{maxHeight: '60px'}} />
+            <h4 className="fw-bold text-dark fs-5 fs-md-4">Inventário de Bobinas</h4>
+            <p className="text-muted small mb-0">Identifique-se para iniciar a contagem</p>
           </div>
           
           <div className="mb-4">
-            <label className="form-label text-secondary fw-semibold">Número do seu Crachá</label>
+            <label className="form-label text-secondary fw-semibold small">Número do seu Crachá</label>
             <input 
-              type="text" 
-              className="form-control form-control-lg bg-light" 
-              placeholder="Ex: 12345"
+              type="number" 
+              className="form-control form-control-lg bg-light fs-6" 
+              placeholder="Ex: 123456"
               value={inputCracha} 
               onChange={e => setInputCracha(e.target.value)} 
               onKeyDown={e => e.key === 'Enter' && !carregandoLogin && fazerLogin()} 
@@ -407,13 +417,13 @@ function App() {
           </div>
           
           <button 
-            className="btn btn-primary btn-lg w-100 fw-bold shadow-sm" 
+            className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2" 
             onClick={fazerLogin} 
             disabled={carregandoLogin}
-            style={{backgroundColor: '#d80404', border: 'none'}}
+            style={{backgroundColor: '#d80404', border: 'none', fontSize: '1rem'}}
           >
             {carregandoLogin ? (
-              <><span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> Validando...</>
+              <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
             ) : 'Entrar no Sistema'}
           </button>
         </div>
@@ -423,27 +433,28 @@ function App() {
 
   // TELA PRINCIPAL
   return (
-    <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-top position-relative">
+    <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-center position-relative pb-5">
+      
       {modal.show && (
         <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content shadow border-0" style={{borderRadius: '4px'}}>
-              <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`} style={{borderRadius: '4px 4px 0 0'}}>
-                <h5 className="modal-title fw-bold">
+          <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
+            <div className="modal-content shadow border-0" style={{borderRadius: '8px', overflow: 'hidden'}}>
+              <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`}>
+                <h5 className="modal-title fw-bold fs-6">
                   {modal.type === 'confirm' && <i className="bi bi-exclamation-triangle-fill me-2"></i>}
                   {modal.title}
                 </h5>
                 <button type="button" className="btn-close btn-close-white" onClick={fecharModal}></button>
               </div>
-              <div className="modal-body p-4 fs-5 text-secondary text-center">
+              <div className="modal-body p-4 fs-6 text-secondary text-center">
                 <p className="mb-0">{modal.message}</p>
               </div>
-              <div className="modal-footer border-0 justify-content-center pb-4">
-                <button type="button" className="btn btn-secondary px-4" onClick={fecharModal}>
+              <div className="modal-footer border-0 justify-content-center pb-4 flex-column flex-sm-row gap-2">
+                <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto m-0" onClick={fecharModal}>
                   {modal.type === 'confirm' ? 'Cancelar' : 'Fechar'}
                 </button>
                 {modal.type === 'confirm' && (
-                  <button type="button" className="btn btn-danger px-4" onClick={modal.onConfirm}>Sim</button>
+                  <button type="button" className="btn btn-danger px-4 w-100 w-sm-auto m-0" onClick={modal.onConfirm}>Sim</button>
                 )}
               </div>
             </div>
@@ -451,32 +462,33 @@ function App() {
         </div>
       )}
 
-      <div className="container" style={{ maxWidth: '800px' }}>
+      <div className="container px-3 px-md-0 pt-3" style={{ maxWidth: '800px', width: '100%' }}>
         <Header />
 
         {/* HEADER PARA INFORMAR OPERADOR LOGADO */}
-        <div className="d-flex justify-content-between align-items-center bg-white p-3 rounded shadow-sm border border-secondary border-opacity-10 mb-4">
+        <div className="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center bg-white p-3 rounded shadow-sm border border-secondary border-opacity-10 mb-4 gap-3">
           <div>
-            <span className="text-muted small d-block">Operador Logado</span>
-            <span className="fw-bold text-dark">{nomeLogado} <span className="text-secondary fw-normal">- {crachaLogado}</span></span>
+            <span className="text-muted small d-block mb-1">Operador Logado</span>
+            <span className="fw-bold text-dark fs-6">{nomeLogado} <span className="text-secondary fw-normal d-block d-sm-inline mt-1 mt-sm-0">- {crachaLogado}</span></span>
           </div>
-          <button className="btn btn-outline-danger btn-sm" onClick={fazerLogout}>
-            Sair
+          <button className="btn btn-outline-danger btn-sm w-100 w-sm-auto" onClick={fazerLogout}>
+            Sair do Sistema
           </button>
         </div>
 
         {/* CAMPO DE IMPORTAÇAO DE DADOS DO SAP */}
         <main>
-          <div className="card shadow-sm border-0 mb-4 bg-light border border-secondary border-opacity-25">
-            <div className="card-body p-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <div className="card shadow-sm border-0 mb-4 bg-white border border-secondary border-opacity-10">
+            <div className="card-body p-3 p-md-4 d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center gap-3">
               <div>
-                <h6 className="mb-1 fw-bold text-secondary">Base do SAP (CSV)</h6>
-                <small className="text-muted">Importe o arquivo do SAP.</small>
+                <h6 className="mb-1 fw-bold text-dark">Base do SAP (CSV)</h6>
+                <small className="text-muted">Importe o arquivo gerado pelo SAP.</small>
               </div>
-              <div>
+              <div className="w-100 w-sm-auto">
                 <input type="file" accept=".csv" className="d-none" ref={fileInputRef} onChange={importarCSV} id="csvUpload" disabled={carregandoAcao} />
-                <label htmlFor="csvUpload" className={`btn btn-outline-secondary btn-sm m-0 ${carregandoAcao ? 'disabled' : ''}`}>
-                  {carregandoAcao ? 'Salvando...' : '📁 Importar SAP'}
+                <label htmlFor="csvUpload" className={`btn btn-outline-secondary btn-sm w-100 w-sm-auto m-0 py-2 d-flex justify-content-center align-items-center gap-2 ${carregandoAcao ? 'disabled' : ''}`}>
+                  {carregandoAcao ? <span className="spinner-border spinner-border-sm"></span> : '📁'} 
+                  {carregandoAcao ? 'Salvando...' : 'Importar SAP'}
                 </label>
               </div>
             </div>
@@ -490,27 +502,27 @@ function App() {
             />
           ) : (
             <div className="card shadow-sm border-0 mb-4">
-              <div className="card-body p-4 text-center">
-                <label htmlFor="inputBobina" className="form-label text-muted mb-3">
+              <div className="card-body p-3 p-md-4 text-center">
+                <label htmlFor="inputBobina" className="form-label text-muted fw-semibold mb-3">
                   Leitura de Bobina
                 </label>
                 
-                <div className="input-group input-group-lg shadow-sm mb-3">
+                <div className="input-group input-group-lg shadow-sm mb-4">
                   <input
                     id="inputBobina"
                     ref={inputRef}
                     type="text"
-                    className="form-control border-end-0"
+                    className="form-control border-end-0 fs-6 bg-light"
                     value={codigo}
                     onChange={(e) => setCodigo(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && !carregandoAcao && adicionarBobina()}
-                    placeholder="Digite ou bipe o código..."
+                    placeholder="Bipe ou digite..."
                     autoComplete="off"
                     disabled={carregandoAcao}
                   />
                   <button 
-                    className="btn btn-primary px-4" 
-                    style={{backgroundColor: '#d80404', border: 'none'}} 
+                    className="btn btn-primary px-3 px-md-4" 
+                    style={{backgroundColor: '#d80404', border: 'none', fontSize: '0.95rem'}} 
                     onClick={() => adicionarBobina()}
                     disabled={carregandoAcao}
                   >
@@ -519,70 +531,70 @@ function App() {
                 </div>
                 
                 <button 
-                  className="btn btn-secondary d-flex align-items-center justify-content-center gap-2 mx-auto w-100"
+                  className="btn btn-dark d-flex align-items-center justify-content-center gap-2 mx-auto w-100 py-2"
                   onClick={() => setUsandoCamera(true)}
-                  style={{maxWidth: '300px'}}
+                  style={{maxWidth: '100%'}}
                   disabled={carregandoAcao}
                 >
-                  <i className="bi bi-camera"></i> Ler com a Câmera
+                  <i className="bi bi-camera fs-5"></i> Ler com a Câmera
                 </button>
               </div>
             </div>
           )}
 
-          {/* GERAÇAO DE RELATORIO */}
-          <div className="d-flex justify-content-center gap-3 mb-4">
-            <button onClick={gerarRelatorio} className="btn btn-outline-danger d-flex align-items-center gap-2">
-              📄 Exportar Relatório (Backup)
-            </button>
+          {/* STATUS DE CODIGOS IMPORTADOS */}
+          <div className="row g-2 g-sm-3 mb-4 text-center">
+            <div className="col-4">
+              <div className="p-2 p-sm-3 bg-white rounded shadow-sm border-bottom border-secondary border-3 h-100 d-flex flex-column justify-content-center">
+                <h6 className="text-muted mb-1" style={{fontSize: '0.75rem', textTransform: 'uppercase'}}>Esperadas</h6>
+                <h5 className="mb-0 fw-bold">{qtdEsperadas}</h5>
+              </div>
+            </div>
+            <div className="col-4">
+              <div className="p-2 p-sm-3 bg-white rounded shadow-sm border-bottom border-success border-3 h-100 d-flex flex-column justify-content-center">
+                <h6 className="text-muted mb-1" style={{fontSize: '0.75rem', textTransform: 'uppercase'}}>Lidas</h6>
+                <h5 className="mb-0 fw-bold text-success">{qtdLidas}</h5>
+              </div>
+            </div>
+            <div className="col-4">
+              <div className="p-2 p-sm-3 bg-white rounded shadow-sm border-bottom border-danger border-3 h-100 d-flex flex-column justify-content-center">
+                <h6 className="text-muted mb-1" style={{fontSize: '0.75rem', textTransform: 'uppercase'}}>Faltam</h6>
+                <h5 className="mb-0 fw-bold text-danger">{qtdFaltam}</h5>
+              </div>
+            </div>
           </div>
 
-          {/* STATUS DE CODIGOS IMPORTADOS */}
-          <div className="row g-3 mb-4 text-center">
-            <div className="col-4">
-              <div className="p-3 bg-white rounded shadow-sm border-bottom border-secondary border-3">
-                <h6 className="text-muted mb-1">Esperadas</h6>
-                <h4 className="mb-0 fw-bold">{qtdEsperadas}</h4>
-              </div>
-            </div>
-            <div className="col-4">
-              <div className="p-3 bg-white rounded shadow-sm border-bottom border-success border-3">
-                <h6 className="text-muted mb-1">Lidas</h6>
-                <h4 className="mb-0 fw-bold">{qtdLidas}</h4>
-              </div>
-            </div>
-            <div className="col-4">
-              <div className="p-3 bg-white rounded shadow-sm border-bottom border-danger border-3">
-                <h6 className="text-muted mb-1">Faltam</h6>
-                <h4 className="mb-0 fw-bold text-danger">{qtdFaltam}</h4>
-              </div>
-            </div>
+          {/* GERAÇAO DE RELATORIO */}
+          <div className="d-flex flex-column flex-sm-row justify-content-center gap-2 mb-4">
+            <button onClick={gerarRelatorio} className="btn btn-outline-danger d-flex align-items-center justify-content-center gap-2 w-100 py-2 fw-semibold">
+              <i className="bi bi-file-earmark-excel"></i> Exportar Relatório (Backup)
+            </button>
           </div>
           
           {/* TABELA DE CODIGOS INVENTARIO */}
           {relatorioNaTela.length > 0 && (
             <>
-              <div className="card shadow-sm border-0 mb-4 animate__animated animate__fadeIn">
-                <div className="card-body p-0">
-                  <table className="table table-hover mb-0 text-center align-middle">
+              <div className="card shadow-sm border-0 mb-4 animate__animated animate__fadeIn overflow-hidden">
+                <div className="card-body p-0 table-responsive">
+                  <table className="table table-hover mb-0 text-center align-middle" style={{whiteSpace: 'nowrap'}}>
                     <thead className="table-dark">
                       <tr>
-                        <th className="py-3">Lote/Código</th>
-                        <th className="py-3">Status</th>
-                        <th className="py-3" style={{width: '60px'}}>Ação</th>
+                        <th className="py-3 px-3">Lote/Código</th>
+                        <th className="py-3 px-3">Status</th>
+                        <th className="py-3 px-3" style={{width: '60px'}}>Ação</th>
                       </tr>
                     </thead>
                     <tbody>
                       {relatorioNaTela.map((item, idx) => (
                         <tr key={idx} className={item.tipo === 'faltando' ? 'table-danger opacity-75' : ''}>
-                          <td className="fw-bold py-3">{item.codigo}</td>
-                          <td>
-                            {item.tipo === 'ok' && <span className="badge bg-success">{item.status}</span>}
-                            {item.tipo === 'faltando' && <span className="badge bg-danger">{item.status}</span>}
-                            {item.tipo === 'sobrando' && <span className="badge bg-warning text-dark">{item.status}</span>}
-                            {!item.tipo && <span className="badge bg-secondary">{item.status}</span>}
+                          <td className="fw-bold py-3 px-3 text-start text-sm-center">{item.codigo}</td>
+                          <td className="px-3">
+                            {item.tipo === 'ok' && <span className="badge bg-success w-100 py-2">OK (Lida)</span>}
+                            {item.tipo === 'faltando' && <span className="badge bg-danger w-100 py-2">Faltando</span>}
+                            {item.tipo === 'sobrando' && <span className="badge bg-warning text-dark w-100 py-2">Sobra</span>}
+                            {!item.tipo && <span className="badge bg-secondary w-100 py-2">{item.status}</span>}
                           </td>
-                          <td>
+                          <td className="px-3">
                             {item.tipo !== 'faltando' && (
                               <button 
                                 className="btn btn-sm btn-outline-danger border-0" 
@@ -590,7 +602,7 @@ function App() {
                                 title="Excluir leitura"
                                 disabled={carregandoAcao}
                               >
-                                <i className="bi bi-trash"></i>
+                                <i className="bi bi-trash fs-5"></i>
                               </button>
                             )}
                           </td>
@@ -601,9 +613,9 @@ function App() {
                 </div>
               </div>
 
-              <div className="d-flex justify-content-center mb-5">
-                <button onClick={limparDados} className="btn fs-6 btn-link text-danger text-decoration-none d-flex align-items-center gap-2">
-                  <i className="bi bi-x-circle"></i> Iniciar Novo Inventário / Limpar Tela
+              <div className="d-flex justify-content-center mb-5 mt-4">
+                <button onClick={limparDados} className="btn fs-6 btn-link text-danger text-decoration-none d-flex align-items-center gap-2 p-2 w-100 justify-content-center">
+                  <i className="bi bi-arrow-counterclockwise fs-5"></i> Iniciar Novo Inventário
                 </button>
               </div>
             </>

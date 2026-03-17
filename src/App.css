@@ -64,3 +64,50 @@ html, body, #root {
 .btn-link:hover {
   color: #D32F2F !important;
 }
+
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+  -webkit-appearance: none; 
+  margin: 0; 
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}
+
+body {
+  background-color: #f8f9fa;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+.table-responsive::-webkit-scrollbar {
+  height: 6px;
+}
+.table-responsive::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 4px;
+}
+
+@media (max-width: 575.98px) {
+  .w-sm-auto { width: 100% !important; }
+}
+@media (min-width: 576px) {
+  .w-sm-auto { width: auto !important; }
+}
+
+.app-header .logo {
+  max-width: 450px;
+  margin-top: 20px;
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 1.5rem; 
+}
+
+@media (max-width: 768px) {
+  .app-container {
+    margin: 1rem;
+    padding: 1rem;
+  }
+  .app-header .logo {
+    max-width: 300px;
+  }
+}
