@@ -117,7 +117,6 @@ function App() {
     });
   }
 
-  // LÓGICA DE SESSÃO DO BANCO
   const garantirSessao = async () => {
     if (sessaoId) {
       const { data } = await supabase
@@ -126,9 +125,7 @@ function App() {
         .eq('id', sessaoId)
         .maybeSingle();
 
-      if (data) {
-        return sessaoId; 
-      }
+      if (data) return sessaoId; 
     }
 
     const { data, error } = await supabase
@@ -146,6 +143,21 @@ function App() {
     return data.id;
   }
 
+  const limparValorParaBanco = (valor) => {
+    if (valor === undefined || valor === null || String(valor).trim() === '') return null;
+    return String(valor).trim();
+  }
+
+  const limparNumeroParaBanco = (valor) => {
+    if (valor === undefined || valor === null || String(valor).trim() === '') return null;
+    let formatado = String(valor).trim();
+    
+    if (formatado.includes(',')) {
+      formatado = formatado.replace(/\./g, '').replace(',', '.');
+    }
+    return formatado;
+  }
+
   // FUNÇÕES DE INVENTÁRIO
   const importarCSV = async (e) => {
     const file = e.target.files[0];
@@ -157,20 +169,69 @@ function App() {
     reader.onload = async (event) => {
       try {
         const text = event.target.result;
-        const separator = text.includes(';') ? ';' : ',';
-        const linhas = text.split('\n').filter(linha => linha.trim() !== '');
+        const linhas = text.split(/\r?\n/).filter(linha => linha.trim() !== '');
         
         if (linhas.length === 0) {
           setCarregandoAcao(false);
           return;
         }
 
-        const headers = linhas[0].split(separator).map(h => h.trim().toLowerCase());
-        const idxLote = headers.indexOf('lote');
-        const idxMaterial = headers.indexOf('material');
-        const idxOrdem = headers.indexOf('ordem produção') !== -1 ? headers.indexOf('ordem produção') : headers.indexOf('ordem_producao');
-        const idxCliente = headers.indexOf('cliente');
-        const idxNomeCliente = headers.indexOf('nome');
+        let idxCabecalho = 0;
+        for(let i=0; i < Math.min(10, linhas.length); i++){
+           if(linhas[i].toLowerCase().includes('lote')) {
+               idxCabecalho = i;
+               break;
+           }
+        }
+
+        const linhaCabecalho = linhas[idxCabecalho];
+        const countPontoVirgula = (linhaCabecalho.match(/;/g) || []).length;
+        const countVirgula = (linhaCabecalho.match(/,/g) || []).length;
+        const separator = countPontoVirgula > countVirgula ? ';' : ',';
+
+        const parseCSVLine = (line) => {
+          let result = [];
+          let current = '';
+          let inQuotes = false;
+          for (let i = 0; i < line.length; i++) {
+            let char = line[i];
+            if (char === '"') {
+              if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++;
+              } else {
+                inQuotes = !inQuotes;
+              }
+            } else if (char === separator && !inQuotes) {
+              result.push(current);
+              current = '';
+            } else {
+              current += char;
+            }
+          }
+          result.push(current);
+          return result.map(val => val.trim());
+        };
+
+        const headersRaw = parseCSVLine(linhaCabecalho);
+        
+        const headersLimpos = headersRaw.map(h => 
+          h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "")
+        );
+
+        const getIdx = (termo) => headersLimpos.indexOf(termo);
+
+        const idxLote = getIdx('lote');
+        const idxMaterial = getIdx('material');
+        const idxOrdem = getIdx('ordemproducao') !== -1 ? getIdx('ordemproducao') : getIdx('ordemproduao');
+        const idxCliente = getIdx('cliente');
+        const idxNomeCliente = getIdx('nome');
+        const idxPesoLiquido = getIdx('pesoliquido');
+        const idxLargura = getIdx('largura');
+        const idxEspessura = getIdx('espessura');
+        const idxDeposito = getIdx('deposito');
+        const idxDescricao = getIdx('descricao');
+        const idxOrdemVenda = getIdx('ordemvenda');
 
         if (idxLote === -1) {
           abrirAlerta('Erro', 'A coluna "Lote" é obrigatória e não foi encontrada no arquivo.');
@@ -179,17 +240,23 @@ function App() {
         }
 
         let codigosExtraidos = [];
-        for (let i = 1; i < linhas.length; i++) {
-          const colunas = linhas[i].split(separator);
+        for (let i = idxCabecalho + 1; i < linhas.length; i++) {
+          const colunas = parseCSVLine(linhas[i]);
           if (colunas.length > idxLote) {
-            const lote = colunas[idxLote]?.trim().replace(/^"|"$/g, '');
+            const lote = colunas[idxLote];
             if (lote && lote !== '') {
               codigosExtraidos.push({
                 lote: lote,
-                material: idxMaterial !== -1 ? colunas[idxMaterial]?.trim().replace(/^"|"$/g, '') : '',
-                ordem_producao: idxOrdem !== -1 ? colunas[idxOrdem]?.trim().replace(/^"|"$/g, '') : '',
-                cliente: idxCliente !== -1 ? colunas[idxCliente]?.trim().replace(/^"|"$/g, '') : '',
-                nome_cliente: idxNomeCliente !== -1 ? colunas[idxNomeCliente]?.trim().replace(/^"|"$/g, '') : ''
+                material: idxMaterial !== -1 ? colunas[idxMaterial] : null,
+                ordem_producao: idxOrdem !== -1 ? colunas[idxOrdem] : null,
+                cliente: idxCliente !== -1 ? colunas[idxCliente] : null,
+                nome_cliente: idxNomeCliente !== -1 ? colunas[idxNomeCliente] : null,
+                peso_liquido: idxPesoLiquido !== -1 ? colunas[idxPesoLiquido] : null,
+                largura: idxLargura !== -1 ? colunas[idxLargura] : null,
+                espessura: idxEspessura !== -1 ? colunas[idxEspessura] : null,
+                deposito: idxDeposito !== -1 ? colunas[idxDeposito] : null,
+                descricao: idxDescricao !== -1 ? colunas[idxDescricao] : null,
+                ordem_venda: idxOrdemVenda !== -1 ? colunas[idxOrdemVenda] : null
               });
             }
           }
@@ -200,28 +267,36 @@ function App() {
         const dadosParaBanco = codigosExtraidos.map(item => ({
           sessao_id: idSessaoAtiva,
           lote: item.lote,
-          material: item.material,
-          ordem_producao: item.ordem_producao,
-          cliente: item.cliente,
-          nome_cliente: item.nome_cliente
+          material: limparValorParaBanco(item.material),
+          ordem_producao: limparValorParaBanco(item.ordem_producao),
+          cliente: limparValorParaBanco(item.cliente),
+          nome_cliente: limparValorParaBanco(item.nome_cliente),
+          peso_liquido: limparNumeroParaBanco(item.peso_liquido),
+          largura: limparNumeroParaBanco(item.largura),
+          espessura: limparNumeroParaBanco(item.espessura),
+          deposito: limparValorParaBanco(item.deposito),
+          descricao: limparValorParaBanco(item.descricao),
+          ordem_venda: limparValorParaBanco(item.ordem_venda)
         }));
 
         const { error } = await supabase.from('bobinas_sap').insert(dadosParaBanco);
 
-        if (error) throw error;
+        if (error) {
+          throw error;
+        }
 
         setCsvBobinas(codigosExtraidos);
         abrirAlerta('Sucesso', `${codigosExtraidos.length} bobinas esperadas importadas e salvas no banco!`);
 
       } catch (erro) {
         console.error(erro);
-        abrirAlerta('Erro', 'Ocorreu um erro ao salvar a planilha no banco de dados.');
+        abrirAlerta('Erro no Banco de Dados', erro.message || JSON.stringify(erro));
       } finally {
         if(fileInputRef.current) fileInputRef.current.value = ''; 
         setCarregandoAcao(false);
       }
     };
-    reader.readAsText(file);
+    reader.readAsText(file, 'ISO-8859-1'); 
   }
 
   const adicionarBobina = async (codigoCopia = null) => {
@@ -324,6 +399,12 @@ function App() {
         ordem_producao: bobinaSAP ? bobinaSAP.ordem_producao : '-',
         cliente: bobinaSAP ? bobinaSAP.cliente : '-',
         nome_cliente: bobinaSAP ? bobinaSAP.nome_cliente : '-',
+        peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-', 
+        largura: bobinaSAP ? bobinaSAP.largura : '-',           
+        espessura: bobinaSAP ? bobinaSAP.espessura : '-',       
+        deposito: bobinaSAP ? bobinaSAP.deposito : '-',         
+        descricao: bobinaSAP ? bobinaSAP.descricao : '-',       
+        ordem_venda: bobinaSAP ? bobinaSAP.ordem_venda : '-',   
         tipo: isOk ? 'ok' : 'sobrando'
       });
     });
@@ -340,6 +421,12 @@ function App() {
           ordem_producao: c.ordem_producao || '-',
           cliente: c.cliente || '-',
           nome_cliente: c.nome_cliente || '-',
+          peso_liquido: c.peso_liquido || '-', 
+          largura: c.largura || '-',           
+          espessura: c.espessura || '-',       
+          deposito: c.deposito || '-',         
+          descricao: c.descricao || '-',       
+          ordem_venda: c.ordem_venda || '-',   
           tipo: 'faltando'
         });
       }
@@ -355,8 +442,15 @@ function App() {
       return;
     }
     
-    let csvContent = "data:text/csv;charset=utf-8,Lote;Material;Ordem Producao;Cliente;Nome Cliente;Status;Data e Hora Leitura;Operador;Cracha\n" 
-      + dados.map(e => `${e.codigo};${e.material};${e.ordem_producao};${e.cliente};${e.nome_cliente};${e.status};${e.dataHora};${e.nome_operador};${e.cracha}`).join("\n");
+    const limparParaCSV = (val) => {
+      if(val === '-' || !val) return '-';
+      let str = String(val);
+      if(str.includes(';') || str.includes(',')) return `"${str}"`;
+      return str;
+    };
+
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote;Material;Descricao;Deposito;Ordem Producao;Ordem Venda;Cliente;Nome Cliente;Peso Liquido;Largura;Espessura;Status;Data e Hora Leitura;Operador;Cracha\n" 
+      + dados.map(e => `${limparParaCSV(e.codigo)};${limparParaCSV(e.material)};${limparParaCSV(e.descricao)};${limparParaCSV(e.deposito)};${limparParaCSV(e.ordem_producao)};${limparParaCSV(e.ordem_venda)};${limparParaCSV(e.cliente)};${limparParaCSV(e.nome_cliente)};${limparParaCSV(e.peso_liquido)};${limparParaCSV(e.largura)};${limparParaCSV(e.espessura)};${limparParaCSV(e.status)};${limparParaCSV(e.dataHora)};${limparParaCSV(e.nome_operador)};${limparParaCSV(e.cracha)}`).join("\n");
       
     const link = document.createElement("a");
     link.href = encodeURI(csvContent);
@@ -372,7 +466,6 @@ function App() {
   const qtdFaltam = Math.max(0, qtdEsperadas - bobinasLidas.filter(b => csvBobinas.some(c => c.lote === b.codigo)).length);
 
 
-  // TELA DE LOGIN
   if (!crachaLogado) {
     return (
       <div className="min-vh-100 bg-light d-flex justify-content-center align-items-center position-relative px-3 py-4">
@@ -431,7 +524,6 @@ function App() {
     );
   }
 
-  // TELA PRINCIPAL
   return (
     <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-center position-relative pb-5">
       
@@ -465,7 +557,6 @@ function App() {
       <div className="container px-3 px-md-0 pt-3" style={{ maxWidth: '800px', width: '100%' }}>
         <Header />
 
-        {/* HEADER PARA INFORMAR OPERADOR LOGADO */}
         <div className="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center bg-white p-3 rounded shadow-sm border border-secondary border-opacity-10 mb-4 gap-3">
           <div>
             <span className="text-muted small d-block mb-1">Operador Logado</span>
@@ -476,7 +567,6 @@ function App() {
           </button>
         </div>
 
-        {/* CAMPO DE IMPORTAÇAO DE DADOS DO SAP */}
         <main>
           <div className="card shadow-sm border-0 mb-4 bg-white border border-secondary border-opacity-10">
             <div className="card-body p-3 p-md-4 d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center gap-3">
@@ -494,7 +584,6 @@ function App() {
             </div>
           </div>
 
-          {/* FUNÇAO PARA USAR CAMERA DO TELEFONE */}
           {usandoCamera ? (
             <Scanner 
               aoLerCodigo={adicionarBobina} 
@@ -542,7 +631,6 @@ function App() {
             </div>
           )}
 
-          {/* STATUS DE CODIGOS IMPORTADOS */}
           <div className="row g-2 g-sm-3 mb-4 text-center">
             <div className="col-4">
               <div className="p-2 p-sm-3 bg-white rounded shadow-sm border-bottom border-secondary border-3 h-100 d-flex flex-column justify-content-center">
@@ -564,14 +652,12 @@ function App() {
             </div>
           </div>
 
-          {/* GERAÇAO DE RELATORIO */}
           <div className="d-flex flex-column flex-sm-row justify-content-center gap-2 mb-4">
             <button onClick={gerarRelatorio} className="btn btn-outline-danger d-flex align-items-center justify-content-center gap-2 w-100 py-2 fw-semibold">
               <i className="bi bi-file-earmark-excel"></i> Exportar Relatório
             </button>
           </div>
           
-          {/* TABELA DE CODIGOS INVENTARIO */}
           {relatorioNaTela.length > 0 && (
             <>
               <div className="card shadow-sm border-0 mb-4 animate__animated animate__fadeIn overflow-hidden">
