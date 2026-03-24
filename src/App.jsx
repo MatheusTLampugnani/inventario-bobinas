@@ -3,6 +3,7 @@ import Header from './components/Header'
 import Scanner from './components/Scanner'
 import logoVideplast from './assets/videplast-brand.png'
 import { supabase } from './supabase'
+import FilterControls from './components/FilterControls'
 import './App.css'
 
 function App() {
@@ -11,6 +12,10 @@ function App() {
   const [nomeLogado, setNomeLogado] = useState(() => sessionStorage.getItem('usuario_nome') || '');
   const [inputCracha, setInputCracha] = useState('');
   const [carregandoLogin, setCarregandoLogin] = useState(false);
+  
+  // ESTADOS DO FILTRO DA CONFERÊNCIA
+  const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '' });
+  const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
 
   // ESTADOS DO INVENTÁRIO 
   const [codigo, setCodigo] = useState('')
@@ -32,6 +37,7 @@ function App() {
     show: false, title: '', message: '', type: 'alert', onConfirm: null
   })
 
+  const [showConferencia, setShowConferencia] = useState(false);
   const inputRef = useRef(null)
   const fileInputRef = useRef(null)
 
@@ -54,10 +60,10 @@ function App() {
   }, [crachaLogado, nomeLogado]);
 
   useEffect(() => {
-    if(crachaLogado && inputRef.current && !modal.show && !usandoCamera) {
+    if(crachaLogado && inputRef.current && !modal.show && !showConferencia && !usandoCamera) {
       inputRef.current.focus();
     }
-  }, [crachaLogado, modal.show, usandoCamera]);
+  }, [crachaLogado, modal.show, showConferencia, usandoCamera]);
 
   // FUNÇÕES DE MODAL
   const fecharModal = () => setModal({ ...modal, show: false });
@@ -524,9 +530,35 @@ function App() {
     );
   }
 
+  let leiturasProcessadas = bobinasLidas.filter(b => b.cracha === crachaLogado);
+
+  if (conferenciaFilters.lote) {
+    leiturasProcessadas = leiturasProcessadas.filter(b => 
+      b.codigo.toLowerCase().includes(conferenciaFilters.lote.toLowerCase())
+    );
+  }
+  if (conferenciaFilters.data_leitura) {
+    leiturasProcessadas = leiturasProcessadas.filter(b => 
+      b.dataHora.includes(conferenciaFilters.data_leitura)
+    );
+  }
+
+  leiturasProcessadas.sort((a, b) => {
+    let valA = a.dataHora;
+    let valB = b.dataHora;
+
+    if (conferenciaSort.field === 'Lote') {
+      valA = a.codigo;
+      valB = b.codigo;
+    }
+
+    if (valA < valB) return conferenciaSort.order === 'asc' ? -1 : 1;
+    if (valA > valB) return conferenciaSort.order === 'asc' ? 1 : -1;
+    return 0;
+  });
+
   return (
     <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-center position-relative pb-5">
-      
       {modal.show && (
         <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
@@ -554,6 +586,65 @@ function App() {
         </div>
       )}
 
+      {/* MODAL DE CONFERÊNCIA */}
+      {showConferencia && (
+        <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
+          <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
+            <div className="modal-content shadow border-0" style={{borderRadius: '8px', overflow: 'hidden'}}>
+              <div className="modal-header border-0 bg-dark text-white">
+                <h5 className="modal-title fw-bold fs-6">
+                  Conferência de Leituras
+                </h5>
+                <button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button>
+              </div>
+              <div className="modal-body p-4 fs-6 text-secondary">
+                <p className="mb-2 text-center">
+                  Operador responsável: <strong className="text-danger">{crachaLogado}</strong>
+                </p>
+                <FilterControls
+                  filters={conferenciaFilters}
+                  onFilterChange={setConferenciaFilters}
+                  onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '' })}
+                  sortConfig={conferenciaSort}
+                  onSortChange={setConferenciaSort}
+                  itemsCount={leiturasProcessadas.length}
+                />
+                
+                <div className="table-responsive border rounded" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                  <table className="table table-hover text-center align-middle mb-0">
+                    <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}>
+                      <tr>
+                        <th className="py-2">Código da Bobina</th>
+                        <th className="py-2">Data e Hora</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {leiturasProcessadas.length === 0 ? (
+                        <tr>
+                          <td colSpan="2" className="text-muted py-4">Nenhuma leitura encontrada com esses filtros.</td>
+                        </tr>
+                      ) : (
+                        leiturasProcessadas.map((leitura, index) => (
+                          <tr key={index}>
+                            <td className="fw-bold">{leitura.codigo}</td>
+                            <td>{leitura.dataHora}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer border-0 justify-content-center pb-4">
+                <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto" onClick={() => setShowConferencia(false)}>
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="container px-3 px-md-0 pt-3" style={{ maxWidth: '800px', width: '100%' }}>
         <Header />
 
@@ -562,9 +653,16 @@ function App() {
             <span className="text-muted small d-block mb-1">Operador Logado</span>
             <span className="fw-bold text-dark fs-6">{nomeLogado} <span className="text-secondary fw-normal d-block d-sm-inline mt-1 mt-sm-0">- {crachaLogado}</span></span>
           </div>
-          <button className="btn btn-outline-danger btn-sm w-100 w-sm-auto" onClick={fazerLogout}>
-            Sair do Sistema
-          </button>
+          
+          {/* BOTÕES DO CABEÇALHO */}
+          <div className="d-flex flex-column flex-sm-row gap-2 w-100 w-sm-auto">
+            <button className="btn btn-outline-danger btn-sm w-100 w-sm-auto" onClick={() => setShowConferencia(true)} disabled={carregandoAcao}>
+              Conferência
+            </button>
+            <button className="btn btn-outline-danger btn-sm w-100 w-sm-auto" onClick={fazerLogout} disabled={carregandoAcao}>
+              Sair do Sistema
+            </button>
+          </div>
         </div>
 
         <main>
