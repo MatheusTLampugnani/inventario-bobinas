@@ -306,12 +306,25 @@ function App() {
   }
 
   const adicionarBobina = async (codigoCopia = null) => {
-    const codParaAdicionar = (typeof codigoCopia === 'string' ? codigoCopia : codigo).trim();
-    
-    if (!codParaAdicionar) return;
-    
-    if (bobinasLidas.some(b => b.codigo === codParaAdicionar)) {
-      abrirAlerta('Atenção', `A bobina ${codParaAdicionar} já foi lida.`);
+    const textoLido = (typeof codigoCopia === 'string' ? codigoCopia : codigo).trim();
+    if (!textoLido) return;
+
+    let lotesExtraidos = [];
+
+    const textoLimpo = textoLido.toUpperCase().replace(/[\r\n\t]+/g, ' ');
+    const regexAgrupador = /VL\d*LT(.*?)KG/;
+    const match = textoLimpo.match(regexAgrupador);
+
+    if (match && match[1]) {
+      const lotesBrutos = match[1].trim();
+      
+      lotesExtraidos = lotesBrutos.split(/\s+/).filter(lote => lote.length > 0);
+    } else {
+      lotesExtraidos = [textoLimpo.trim()];
+    }
+
+    if (lotesExtraidos.length === 0) {
+      abrirAlerta('Atenção', 'Não foi possível extrair códigos desta leitura.');
       setCodigo('');
       return;
     }
@@ -320,31 +333,55 @@ function App() {
 
     try {
       const idSessaoAtiva = await garantirSessao();
-      const { error } = await supabase
-        .from('bobinas_lidas')
-        .insert([{ 
-          sessao_id: idSessaoAtiva, 
-          lote: codParaAdicionar, 
-          cracha_leitura: crachaLogado 
-        }]);
+      let listaAtualizada = [...bobinasLidas];
+      
+      let lotesSucessoSAP = []; 
+      let avisos = []; 
 
-      if (error) throw error;
+      for (const lote of lotesExtraidos) {
+        const loteLimpo = lote.trim();
+        if (!loteLimpo) continue;
 
-      const constaSistema = csvBobinas.some(c => c.lote === codParaAdicionar);
-      if (!constaSistema && csvBobinas.length > 0) {
-        abrirAlerta('Aviso de Divergência', `Bobina ${codParaAdicionar} salva, mas NÃO estava na lista do SAP.`);
+        if (listaAtualizada.some(b => b.codigo === loteLimpo)) {
+          avisos.push(`⚠️ A bobina ${loteLimpo} já foi lida.`);
+          continue; 
+        }
+
+        const { error } = await supabase
+          .from('bobinas_lidas')
+          .insert([{ sessao_id: idSessaoAtiva, lote: loteLimpo, cracha_leitura: crachaLogado }]);
+
+        if (error) throw error;
+
+        const constaSistema = csvBobinas.some(c => c.lote === loteLimpo);
+        if (constaSistema || csvBobinas.length === 0) {
+          lotesSucessoSAP.push(loteLimpo);
+        } else {
+          avisos.push(`⚠️ Bobina ${loteLimpo} lida, mas NÃO está no SAP.`);
+        }
+
+        const novaBobina = { 
+          codigo: loteLimpo, 
+          dataHora: new Date().toLocaleString('pt-BR'),
+          cracha: crachaLogado,
+          nome: nomeLogado
+        };
+        
+        listaAtualizada = [novaBobina, ...listaAtualizada];
       }
 
-      const novaBobina = { 
-        codigo: codParaAdicionar, 
-        dataHora: new Date().toLocaleString('pt-BR'),
-        cracha: crachaLogado,
-        nome: nomeLogado
-      };
-      
-      setBobinasLidas([novaBobina, ...bobinasLidas]);
+      setBobinasLidas(listaAtualizada);
       setCodigo('');
-      setUsandoCamera(false); 
+      setUsandoCamera(false);
+
+      if (lotesSucessoSAP.length > 0 && avisos.length === 0) {
+        abrirAlerta(
+          '✅ Leitura OK!', 
+          `${lotesSucessoSAP.length} bobina(s) validada(s):\n${lotesSucessoSAP.join(', ')}`
+        );
+      } else if (avisos.length > 0) {
+        abrirAlerta('Atenção na Leitura', avisos.join('\n\n'));
+      }
 
     } catch (erro) {
       console.error(erro);
@@ -755,6 +792,12 @@ function App() {
               <i className="bi bi-file-earmark-excel"></i> Exportar Relatório
             </button>
           </div>
+
+          <div className="d-flex justify-content-center mb-5 mt-4">
+            <button onClick={limparDados} className="btn fs-6 btn-link text-danger text-decoration-none d-flex align-items-center gap-2 p-2 w-100 justify-content-center">
+              <i className="bi bi-arrow-counterclockwise fs-5"></i> Iniciar Novo Inventário
+            </button>
+          </div>
           
           {relatorioNaTela.length > 0 && (
             <>
@@ -795,12 +838,6 @@ function App() {
                     </tbody>
                   </table>
                 </div>
-              </div>
-
-              <div className="d-flex justify-content-center mb-5 mt-4">
-                <button onClick={limparDados} className="btn fs-6 btn-link text-danger text-decoration-none d-flex align-items-center gap-2 p-2 w-100 justify-content-center">
-                  <i className="bi bi-arrow-counterclockwise fs-5"></i> Iniciar Novo Inventário
-                </button>
               </div>
             </>
           )}
