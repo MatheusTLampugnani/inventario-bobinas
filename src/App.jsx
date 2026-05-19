@@ -320,7 +320,7 @@ function App() {
       
       lotesExtraidos = lotesBrutos.split(/\s+/).filter(lote => lote.length > 0);
     } else {
-      lotesExtraidos = [textoLimpo.trim()];
+      lotesExtraidos = textoLimpo.split(/[\s,;]+/).filter(lote => lote.length > 0);
     }
 
     if (lotesExtraidos.length === 0) {
@@ -732,17 +732,17 @@ function App() {
                 </label>
                 
                 <div className="input-group input-group-lg shadow-sm mb-4">
-                  <input
+                  <textarea
                     id="inputBobina"
                     ref={inputRef}
-                    type="text"
                     className="form-control border-end-0 fs-6 bg-light"
                     value={codigo}
                     onChange={(e) => setCodigo(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && !carregandoAcao && adicionarBobina()}
-                    placeholder="Bipe ou digite..."
+                    placeholder="Bipe ou digite os códigos (espaço, vírgula ou nova linha)..."
                     autoComplete="off"
                     disabled={carregandoAcao}
+                    rows={2}
+                    style={{ resize: 'none' }}
                   />
                   <button 
                     className="btn btn-primary px-3 px-md-4" 
