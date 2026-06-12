@@ -1111,3 +1111,125 @@ textarea.vp-input {
     opacity: 1;
   }
 }
+
+/* =========================================
+   AJUSTES GLOBAIS PARA MOBILE (Telas < 768px)
+   Reduz o tamanho de TUDO para caber melhor no celular
+   ========================================= */
+@media (max-width: 767.98px) {
+
+  /* Reduz a proporção geral da raiz (Tudo que usa 'rem' encolhe) */
+  html {
+    font-size: 13px !important;
+  }
+
+  /* Reduz paddings dos cartões e modais */
+  .card,
+  .vp-card,
+  .vp-operator-card,
+  .modal-body,
+  .modal-header,
+  .modal-footer {
+    padding: 0.85rem !important;
+  }
+
+  /* Achata botões */
+  .btn,
+  .vp-btn {
+    padding: 0.4rem 0.75rem !important;
+    font-size: 0.9rem !important;
+    height: auto !important;
+    min-height: 38px !important;
+  }
+
+  /* Inputs menores em altura (mas fontes forçadas a 16px pela regra do iOS acima) */
+  .form-control,
+  .form-select,
+  .vp-input {
+    padding: 0.4rem 0.75rem !important;
+    height: auto !important;
+    min-height: 40px !important;
+  }
+
+  /* Diminui a caixa de bipagem */
+  .vp-input-group textarea {
+    min-height: 40px !important;
+  }
+
+  /* Textos menores */
+  h2.vp-title {
+    font-size: 1.25rem !important;
+  }
+
+  h3.vp-title {
+    font-size: 1.1rem !important;
+  }
+
+  .vp-operator-name {
+    font-size: 1.1rem !important;
+  }
+
+  .vp-subtitle {
+    font-size: 0.85rem !important;
+    margin-bottom: 0.75rem !important;
+  }
+
+  /* Ajuste Contadores */
+  .vp-counters-container {
+    gap: 0.5rem !important;
+  }
+
+  .vp-counter-card {
+    padding: 0.75rem !important;
+  }
+
+  .vp-counter-value {
+    font-size: 1.5rem !important;
+  }
+
+  .vp-counter-label {
+    font-size: 0.75rem !important;
+  }
+
+  /* Ajuste dos Cartões de Conferência */
+  .vp-mobile-report-card {
+    padding: 0.75rem !important;
+    margin-bottom: 0.5rem !important;
+  }
+
+  .vp-mobile-card-lote {
+    font-size: 1rem !important;
+  }
+
+  .vp-mobile-card-details .vp-detail-item {
+    font-size: 0.85rem !important;
+    margin-bottom: 0.15rem !important;
+  }
+
+  .vp-detail-label {
+    font-size: 0.75rem !important;
+  }
+
+  .vp-detail-val {
+    font-size: 0.85rem !important;
+  }
+
+  /* Ajuste Logo Login */
+  .logo-videplast-login {
+    max-height: 80px !important;
+  }
+
+  /* Ajuste Ações de Rodapé */
+  .vp-bottom-actions button {
+    height: 42px !important;
+    font-size: 0.9rem !important;
+    padding: 0.5rem !important;
+  }
+
+  /* Ajuste Iniciais Operador */
+  .vp-operator-avatar {
+    width: 40px !important;
+    height: 40px !important;
+    font-size: 1rem !important;
+  }
+}
