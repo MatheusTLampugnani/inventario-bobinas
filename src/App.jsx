@@ -356,7 +356,7 @@ function App() {
           }
         }
 
-        const idSessaoAtiva = await garantizarSessao();
+        const idSessaoAtiva = await garantirSessao();
 
         const dadosParaBanco = codigosExtraidos.map(item => ({
           sessao_id: idSessaoAtiva,
