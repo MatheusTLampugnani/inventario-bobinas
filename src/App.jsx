@@ -1,10 +1,20 @@
-import { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import Header from './components/Header'
 import Scanner from './components/Scanner'
 import logoVideplast from './assets/videplast-brand.png'
 import { supabase } from './supabase'
 import FilterControls from './components/FilterControls'
+import ProcessadorDrone from './components/ProcessadorDrone'
 import './App.css'
+
+const obterIniciais = (nome) => {
+  if (!nome) return 'OP';
+  const partes = nome.trim().split(/\s+/);
+  if (partes.length >= 2) {
+    return (partes[0][0] + partes[partes.length - 1][0]).toUpperCase();
+  }
+  return partes[0].substring(0, 2).toUpperCase();
+};
 
 function App() {
   // ESTADOS DE LOGIN
@@ -12,10 +22,13 @@ function App() {
   const [nomeLogado, setNomeLogado] = useState(() => sessionStorage.getItem('usuario_nome') || '');
   const [inputCracha, setInputCracha] = useState('');
   const [carregandoLogin, setCarregandoLogin] = useState(false);
-  
+  const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('usuario_is_admin') === 'true');
+  const [leiturasGlobais, setLeiturasGlobais] = useState([]);
+
   // ESTADOS DO FILTRO DA CONFERÊNCIA
   const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '' });
   const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
+  const [usandoDrone, setUsandoDrone] = useState(false);
 
   // ESTADOS DO INVENTÁRIO 
   const [codigo, setCodigo] = useState('')
@@ -27,7 +40,7 @@ function App() {
     const saved = sessionStorage.getItem('csv_bobinas');
     return saved ? JSON.parse(saved) : [];
   })
-  
+
   const [bobinasLidas, setBobinasLidas] = useState(() => {
     const saved = sessionStorage.getItem('lidas_bobinas');
     return saved ? JSON.parse(saved) : [];
@@ -38,6 +51,15 @@ function App() {
   })
 
   const [showConferencia, setShowConferencia] = useState(false);
+  const [lotesExpandidos, setLotesExpandidos] = useState({});
+
+  const toggleLoteExpandido = (lote) => {
+    setLotesExpandidos(prev => ({
+      ...prev,
+      [lote]: !prev[lote]
+    }));
+  };
+
   const inputRef = useRef(null)
   const fileInputRef = useRef(null)
 
@@ -53,25 +75,27 @@ function App() {
     if (crachaLogado && nomeLogado) {
       sessionStorage.setItem('usuario_cracha', crachaLogado);
       sessionStorage.setItem('usuario_nome', nomeLogado);
+      sessionStorage.setItem('usuario_is_admin', String(isAdmin));
     } else {
       sessionStorage.removeItem('usuario_cracha');
       sessionStorage.removeItem('usuario_nome');
+      sessionStorage.removeItem('usuario_is_admin');
     }
-  }, [crachaLogado, nomeLogado]);
+  }, [crachaLogado, nomeLogado, isAdmin]);
 
   useEffect(() => {
-    if(crachaLogado && inputRef.current && !modal.show && !showConferencia && !usandoCamera) {
+    if (crachaLogado && inputRef.current && !modal.show && !showConferencia && !usandoCamera) {
       inputRef.current.focus();
     }
   }, [crachaLogado, modal.show, showConferencia, usandoCamera]);
 
   // FUNÇÕES DE MODAL
   const fecharModal = () => setModal({ ...modal, show: false });
-  
+
   const abrirAlerta = (titulo, mensagem) => {
     setModal({ show: true, title: titulo, message: mensagem, type: 'alert', onConfirm: null });
   }
-  
+
   const abrirConfirmacao = (titulo, mensagem, acaoConfirmar) => {
     setModal({
       show: true, title: titulo, message: mensagem, type: 'confirm',
@@ -91,8 +115,8 @@ function App() {
     try {
       const { data, error } = await supabase
         .from('crachas')
-        .select('id, nome_completo') 
-        .eq('id', inputCracha.trim()) 
+        .select('id, nome_completo, admin')
+        .eq('id', inputCracha.trim())
         .single();
 
       if (error) {
@@ -104,7 +128,8 @@ function App() {
 
       if (data) {
         setCrachaLogado(inputCracha.trim());
-        setNomeLogado(data.nome_completo || 'Operador'); 
+        setNomeLogado(data.nome_completo || 'Operador');
+        setIsAdmin(!!data.admin);
       }
 
     } catch (err) {
@@ -120,6 +145,7 @@ function App() {
       setCrachaLogado('');
       setNomeLogado('');
       setInputCracha('');
+      setIsAdmin(false);
     });
   }
 
@@ -131,7 +157,7 @@ function App() {
         .eq('id', sessaoId)
         .maybeSingle();
 
-      if (data) return sessaoId; 
+      if (data) return sessaoId;
     }
 
     const { data, error } = await supabase
@@ -157,12 +183,49 @@ function App() {
   const limparNumeroParaBanco = (valor) => {
     if (valor === undefined || valor === null || String(valor).trim() === '') return null;
     let formatado = String(valor).trim();
-    
+
     if (formatado.includes(',')) {
       formatado = formatado.replace(/\./g, '').replace(',', '.');
     }
     return formatado;
   }
+
+  const abrirConferenciaAdmin = async () => {
+    setShowConferencia(true);
+
+    if (isAdmin) {
+      setCarregandoAcao(true);
+      try {
+        const { data: leituras, error: erroLeituras } = await supabase
+          .from('bobinas_lidas')
+          .select('*');
+
+        const { data: crachas, error: erroCrachas } = await supabase
+          .from('crachas')
+          .select('id, nome_completo');
+
+        if (erroLeituras) throw erroLeituras;
+
+        if (leituras) {
+          const listaGlobal = leituras.map(b => {
+            const dono = crachas?.find(c => c.id === b.cracha_leitura);
+            return {
+              codigo: b.lote,
+              dataHora: b.created_at ? new Date(b.created_at).toLocaleString('pt-BR') : '-',
+              cracha: b.cracha_leitura,
+              nome: dono ? dono.nome_completo : b.cracha_leitura
+            };
+          });
+
+          setLeiturasGlobais(listaGlobal);
+        }
+      } catch (err) {
+        console.error("Erro ao sincronizar as leituras globais:", err);
+      } finally {
+        setCarregandoAcao(false);
+      }
+    }
+  };
 
   // FUNÇÕES DE INVENTÁRIO
   const importarCSV = async (e) => {
@@ -176,18 +239,18 @@ function App() {
       try {
         const text = event.target.result;
         const linhas = text.split(/\r?\n/).filter(linha => linha.trim() !== '');
-        
+
         if (linhas.length === 0) {
           setCarregandoAcao(false);
           return;
         }
 
         let idxCabecalho = 0;
-        for(let i=0; i < Math.min(10, linhas.length); i++){
-           if(linhas[i].toLowerCase().includes('lote')) {
-               idxCabecalho = i;
-               break;
-           }
+        for (let i = 0; i < Math.min(10, linhas.length); i++) {
+          if (linhas[i].toLowerCase().includes('lote')) {
+            idxCabecalho = i;
+            break;
+          }
         }
 
         const linhaCabecalho = linhas[idxCabecalho];
@@ -220,8 +283,8 @@ function App() {
         };
 
         const headersRaw = parseCSVLine(linhaCabecalho);
-        
-        const headersLimpos = headersRaw.map(h => 
+
+        const headersLimpos = headersRaw.map(h =>
           h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "")
         );
 
@@ -298,33 +361,26 @@ function App() {
         console.error(erro);
         abrirAlerta('Erro no Banco de Dados', erro.message || JSON.stringify(erro));
       } finally {
-        if(fileInputRef.current) fileInputRef.current.value = ''; 
+        if (fileInputRef.current) fileInputRef.current.value = '';
         setCarregandoAcao(false);
       }
     };
-    reader.readAsText(file, 'ISO-8859-1'); 
+    reader.readAsText(file, 'ISO-8859-1');
   }
 
   const adicionarBobina = async (codigoCopia = null) => {
     const textoLido = (typeof codigoCopia === 'string' ? codigoCopia : codigo).trim();
     if (!textoLido) return;
 
-    let lotesExtraidos = [];
-
     const textoLimpo = textoLido.toUpperCase().replace(/[\r\n\t]+/g, ' ');
-    const regexAgrupador = /VL\d*LT(.*?)KG/;
-    const match = textoLimpo.match(regexAgrupador);
 
-    if (match && match[1]) {
-      const lotesBrutos = match[1].trim();
-      
-      lotesExtraidos = lotesBrutos.split(/\s+/).filter(lote => lote.length > 0);
-    } else {
-      lotesExtraidos = textoLimpo.split(/[\s,;]+/).filter(lote => lote.length > 0);
-    }
+    const regexValidos = /(RA|MA|VA)\d+/g;
+    let lotesExtraidos = textoLimpo.match(regexValidos) || [];
+
+    lotesExtraidos = [...new Set(lotesExtraidos)];
 
     if (lotesExtraidos.length === 0) {
-      abrirAlerta('Atenção', 'Não foi possível extrair códigos desta leitura.');
+      abrirAlerta('Atenção', 'Não foi possível encontrar códigos válidos (RA, MA, VA) nesta leitura.');
       setCodigo('');
       return;
     }
@@ -334,9 +390,9 @@ function App() {
     try {
       const idSessaoAtiva = await garantirSessao();
       let listaAtualizada = [...bobinasLidas];
-      
-      let lotesSucessoSAP = []; 
-      let avisos = []; 
+
+      let lotesSucessoSAP = [];
+      let avisos = [];
 
       for (const lote of lotesExtraidos) {
         const loteLimpo = lote.trim();
@@ -344,7 +400,7 @@ function App() {
 
         if (listaAtualizada.some(b => b.codigo === loteLimpo)) {
           avisos.push(`⚠️ A bobina ${loteLimpo} já foi lida.`);
-          continue; 
+          continue;
         }
 
         const { error } = await supabase
@@ -360,13 +416,13 @@ function App() {
           avisos.push(`⚠️ Bobina ${loteLimpo} lida, mas NÃO está no SAP.`);
         }
 
-        const novaBobina = { 
-          codigo: loteLimpo, 
+        const novaBobina = {
+          codigo: loteLimpo,
           dataHora: new Date().toLocaleString('pt-BR'),
           cracha: crachaLogado,
           nome: nomeLogado
         };
-        
+
         listaAtualizada = [novaBobina, ...listaAtualizada];
       }
 
@@ -376,7 +432,7 @@ function App() {
 
       if (lotesSucessoSAP.length > 0 && avisos.length === 0) {
         abrirAlerta(
-          '✅ Leitura OK!', 
+          '✅ Leitura OK!',
           `${lotesSucessoSAP.length} bobina(s) validada(s):\n${lotesSucessoSAP.join(', ')}`
         );
       } else if (avisos.length > 0) {
@@ -391,9 +447,58 @@ function App() {
     }
   }
 
+  const processarLoteDrone = async (arrayDeTextosLidos) => {
+    setUsandoDrone(false);
+    if (arrayDeTextosLidos.length === 0) {
+      abrirAlerta('Resultado do Drone', 'Nenhum QR Code válido foi encontrado no vídeo.');
+      return;
+    }
+
+    setCarregandoAcao(true);
+    let lotesFormatados = [];
+
+    arrayDeTextosLidos.forEach(texto => {
+      const textoLimpo = texto.toUpperCase().replace(/[\r\n\t]+/g, ' ');
+      const regexValidos = /(RA|MA|VA)\d+/g;
+
+      const matches = textoLimpo.match(regexValidos);
+      if (matches) {
+        lotesFormatados.push(...matches);
+      }
+    });
+
+    lotesFormatados = [...new Set(lotesFormatados)];
+
+    try {
+      const idSessaoAtiva = await garantirSessao();
+      let listaAtualizada = [...bobinasLidas];
+      let insercoesNoBanco = [];
+
+      for (const lote of lotesFormatados) {
+        if (!lote || listaAtualizada.some(b => b.codigo === lote)) continue;
+
+        const novaBobina = { codigo: lote, dataHora: new Date().toLocaleString('pt-BR'), cracha: crachaLogado, nome: nomeLogado };
+        listaAtualizada = [novaBobina, ...listaAtualizada];
+        insercoesNoBanco.push({ sessao_id: idSessaoAtiva, lote: lote, cracha_leitura: crachaLogado });
+      }
+
+      if (insercoesNoBanco.length > 0) {
+        const { error } = await supabase.from('bobinas_lidas').insert(insercoesNoBanco);
+        if (error) throw error;
+      }
+
+      setBobinasLidas(listaAtualizada);
+      abrirAlerta('Missão do Drone Concluída!', `Foram processados e inseridos ${insercoesNoBanco.length} novos lotes únicos no sistema com sucesso.`);
+    } catch (erro) {
+      abrirAlerta('Erro', 'Ocorreu um problema ao salvar os dados do drone.');
+    } finally {
+      setCarregandoAcao(false);
+    }
+  };
+
   const removerBobina = async (codigoParaRemover) => {
     setCarregandoAcao(true);
-    
+
     try {
       if (sessaoId) {
         const { error } = await supabase
@@ -442,12 +547,12 @@ function App() {
         ordem_producao: bobinaSAP ? bobinaSAP.ordem_producao : '-',
         cliente: bobinaSAP ? bobinaSAP.cliente : '-',
         nome_cliente: bobinaSAP ? bobinaSAP.nome_cliente : '-',
-        peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-', 
-        largura: bobinaSAP ? bobinaSAP.largura : '-',           
-        espessura: bobinaSAP ? bobinaSAP.espessura : '-',       
-        deposito: bobinaSAP ? bobinaSAP.deposito : '-',         
-        descricao: bobinaSAP ? bobinaSAP.descricao : '-',       
-        ordem_venda: bobinaSAP ? bobinaSAP.ordem_venda : '-',   
+        peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-',
+        largura: bobinaSAP ? bobinaSAP.largura : '-',
+        espessura: bobinaSAP ? bobinaSAP.espessura : '-',
+        deposito: bobinaSAP ? bobinaSAP.deposito : '-',
+        descricao: bobinaSAP ? bobinaSAP.descricao : '-',
+        ordem_venda: bobinaSAP ? bobinaSAP.ordem_venda : '-',
         tipo: isOk ? 'ok' : 'sobrando'
       });
     });
@@ -464,12 +569,12 @@ function App() {
           ordem_producao: c.ordem_producao || '-',
           cliente: c.cliente || '-',
           nome_cliente: c.nome_cliente || '-',
-          peso_liquido: c.peso_liquido || '-', 
-          largura: c.largura || '-',           
-          espessura: c.espessura || '-',       
-          deposito: c.deposito || '-',         
-          descricao: c.descricao || '-',       
-          ordem_venda: c.ordem_venda || '-',   
+          peso_liquido: c.peso_liquido || '-',
+          largura: c.largura || '-',
+          espessura: c.espessura || '-',
+          deposito: c.deposito || '-',
+          descricao: c.descricao || '-',
+          ordem_venda: c.ordem_venda || '-',
           tipo: 'faltando'
         });
       }
@@ -481,20 +586,20 @@ function App() {
   const gerarRelatorio = () => {
     const dados = obterRelatorioConciliado();
     if (dados.length === 0) {
-      abrirAlerta('Vazio', 'Sem dados para gerar relatório.'); 
+      abrirAlerta('Vazio', 'Sem dados para gerar relatório.');
       return;
     }
-    
+
     const limparParaCSV = (val) => {
-      if(val === '-' || !val) return '-';
+      if (val === '-' || !val) return '-';
       let str = String(val);
-      if(str.includes(';') || str.includes(',')) return `"${str}"`;
+      if (str.includes(';') || str.includes(',')) return `"${str}"`;
       return str;
     };
 
-    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote;Material;Descricao;Deposito;Ordem Producao;Ordem Venda;Cliente;Nome Cliente;Peso Liquido;Largura;Espessura;Status;Data e Hora Leitura;Operador;Cracha\n" 
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote;Material;Descricao;Deposito;Ordem Producao;Ordem Venda;Cliente;Nome Cliente;Peso Liquido;Largura;Espessura;Status;Data e Hora Leitura;Operador;Cracha\n"
       + dados.map(e => `${limparParaCSV(e.codigo)};${limparParaCSV(e.material)};${limparParaCSV(e.descricao)};${limparParaCSV(e.deposito)};${limparParaCSV(e.ordem_producao)};${limparParaCSV(e.ordem_venda)};${limparParaCSV(e.cliente)};${limparParaCSV(e.nome_cliente)};${limparParaCSV(e.peso_liquido)};${limparParaCSV(e.largura)};${limparParaCSV(e.espessura)};${limparParaCSV(e.status)};${limparParaCSV(e.dataHora)};${limparParaCSV(e.nome_operador)};${limparParaCSV(e.cracha)}`).join("\n");
-      
+
     const link = document.createElement("a");
     link.href = encodeURI(csvContent);
     link.download = `relatorio_inventario_${new Date().getTime()}.csv`;
@@ -513,7 +618,7 @@ function App() {
     return (
       <div className="min-vh-100 bg-light d-flex justify-content-center align-items-center position-relative px-3 py-4">
         {modal.show && (
-          <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
+          <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
             <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
               <div className="modal-content shadow border-0">
                 <div className="modal-header border-0 bg-dark text-white">
@@ -533,30 +638,30 @@ function App() {
 
         <div className="card shadow-lg border-0 p-4 p-md-5 w-100" style={{ maxWidth: '450px', borderRadius: '12px' }}>
           <div className="text-center mb-4 mb-md-5">
-            <img src={logoVideplast} alt="Videplast" className="img-fluid mb-4" style={{maxHeight: '60px'}} />
+            <img src={logoVideplast} alt="Videplast" className="img-fluid mb-4" style={{ maxHeight: '60px' }} />
             <h4 className="fw-bold text-dark fs-5 fs-md-4">Inventário de Bobinas</h4>
             <p className="text-muted small mb-0">Identifique-se para iniciar a contagem</p>
           </div>
-          
+
           <div className="mb-4">
             <label className="form-label text-secondary fw-semibold small">Número do seu Crachá</label>
-            <input 
-              type="number" 
-              className="form-control form-control-lg bg-light fs-6" 
+            <input
+              type="number"
+              className="form-control form-control-lg bg-light fs-6"
               placeholder="Ex: 123456"
-              value={inputCracha} 
-              onChange={e => setInputCracha(e.target.value)} 
-              onKeyDown={e => e.key === 'Enter' && !carregandoLogin && fazerLogin()} 
-              autoFocus 
+              value={inputCracha}
+              onChange={e => setInputCracha(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !carregandoLogin && fazerLogin()}
+              autoFocus
               disabled={carregandoLogin}
             />
           </div>
-          
-          <button 
-            className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2" 
-            onClick={fazerLogin} 
+
+          <button
+            className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2"
+            onClick={fazerLogin}
             disabled={carregandoLogin}
-            style={{backgroundColor: '#d80404', border: 'none', fontSize: '1rem'}}
+            style={{ backgroundColor: '#d80404', border: 'none', fontSize: '1rem' }}
           >
             {carregandoLogin ? (
               <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
@@ -567,15 +672,21 @@ function App() {
     );
   }
 
-  let leiturasProcessadas = bobinasLidas.filter(b => b.cracha === crachaLogado);
+  // ==========================================
+  // CORREÇÃO: O modal de conferência puxa os dados globais.
+  // A tela principal continuará puxando 'bobinasLidas'
+  // ==========================================
+  let leiturasProcessadas = isAdmin
+    ? leiturasGlobais
+    : bobinasLidas;
 
   if (conferenciaFilters.lote) {
-    leiturasProcessadas = leiturasProcessadas.filter(b => 
+    leiturasProcessadas = leiturasProcessadas.filter(b =>
       b.codigo.toLowerCase().includes(conferenciaFilters.lote.toLowerCase())
     );
   }
   if (conferenciaFilters.data_leitura) {
-    leiturasProcessadas = leiturasProcessadas.filter(b => 
+    leiturasProcessadas = leiturasProcessadas.filter(b =>
       b.dataHora.includes(conferenciaFilters.data_leitura)
     );
   }
@@ -597,9 +708,9 @@ function App() {
   return (
     <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-center position-relative pb-5">
       {modal.show && (
-        <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
+        <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
-            <div className="modal-content shadow border-0" style={{borderRadius: '8px', overflow: 'hidden'}}>
+            <div className="modal-content shadow border-0" style={{ borderRadius: '8px', overflow: 'hidden' }}>
               <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`}>
                 <h5 className="modal-title fw-bold fs-6">
                   {modal.type === 'confirm' && <i className="bi bi-exclamation-triangle-fill me-2"></i>}
@@ -625,12 +736,12 @@ function App() {
 
       {/* MODAL DE CONFERÊNCIA */}
       {showConferencia && (
-        <div className="modal fade show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
+        <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
-            <div className="modal-content shadow border-0" style={{borderRadius: '8px', overflow: 'hidden'}}>
+            <div className="modal-content shadow border-0" style={{ borderRadius: '8px', overflow: 'hidden' }}>
               <div className="modal-header border-0 bg-dark text-white">
                 <h5 className="modal-title fw-bold fs-6">
-                  Conferência de Leituras
+                  Conferência de Leituras (Histórico Geral)
                 </h5>
                 <button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button>
               </div>
@@ -646,24 +757,28 @@ function App() {
                   onSortChange={setConferenciaSort}
                   itemsCount={leiturasProcessadas.length}
                 />
-                
+
                 <div className="table-responsive border rounded" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   <table className="table table-hover text-center align-middle mb-0">
                     <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}>
                       <tr>
                         <th className="py-2">Código da Bobina</th>
+                        {isAdmin && <th className="py-2">Operador</th>}
                         <th className="py-2">Data e Hora</th>
                       </tr>
                     </thead>
                     <tbody>
                       {leiturasProcessadas.length === 0 ? (
                         <tr>
-                          <td colSpan="2" className="text-muted py-4">Nenhuma leitura encontrada com esses filtros.</td>
+                          <td colSpan={isAdmin ? 3 : 2} className="text-muted py-4">
+                            Nenhuma leitura encontrada com esses filtros.
+                          </td>
                         </tr>
                       ) : (
                         leiturasProcessadas.map((leitura, index) => (
                           <tr key={index}>
                             <td className="fw-bold">{leitura.codigo}</td>
+                            {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
                             <td>{leitura.dataHora}</td>
                           </tr>
                         ))
@@ -682,162 +797,340 @@ function App() {
         </div>
       )}
 
-      <div className="container px-3 px-md-0 pt-3" style={{ maxWidth: '800px', width: '100%' }}>
+      <div className="container px-3 px-md-0 pt-2 pb-5" style={{ maxWidth: '800px', width: '100%' }}>
         <Header />
 
-        <div className="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center bg-white p-3 rounded shadow-sm border border-secondary border-opacity-10 mb-4 gap-3">
-          <div>
-            <span className="text-muted small d-block mb-1">Operador Logado</span>
-            <span className="fw-bold text-dark fs-6">{nomeLogado} <span className="text-secondary fw-normal d-block d-sm-inline mt-1 mt-sm-0">- {crachaLogado}</span></span>
+        <div className="vp-operator-card animate__animated animate__fadeIn mb-4">
+          <div className="vp-operator-info">
+            <div className="vp-operator-avatar">
+              {obterIniciais(nomeLogado)}
+            </div>
+            <div>
+              <span className="vp-micro-label" style={{ margin: 0 }}>Operador Logado</span>
+              <h4 className="vp-operator-name">{nomeLogado}</h4>
+              <span className="vp-operator-badge"><i className="bi bi-person-badge"></i> {crachaLogado}</span>
+            </div>
           </div>
-          
-          {/* BOTÕES DO CABEÇALHO */}
-          <div className="d-flex flex-column flex-sm-row gap-2 w-100 w-sm-auto">
-            <button className="btn btn-outline-danger btn-sm w-100 w-sm-auto" onClick={() => setShowConferencia(true)} disabled={carregandoAcao}>
-              Conferência
+
+          <div className="vp-operator-actions">
+            <button className="vp-btn vp-btn-outline" onClick={abrirConferenciaAdmin} disabled={carregandoAcao}>
+              <i className="bi bi-list-check"></i> Conferência
             </button>
-            <button className="btn btn-outline-danger btn-sm w-100 w-sm-auto" onClick={fazerLogout} disabled={carregandoAcao}>
-              Sair do Sistema
+            <button className="vp-btn vp-btn-ghost-danger" onClick={fazerLogout} disabled={carregandoAcao}>
+              <i className="bi bi-box-arrow-right"></i> Sair
             </button>
           </div>
         </div>
 
         <main>
-          <div className="card shadow-sm border-0 mb-4 bg-white border border-secondary border-opacity-10">
-            <div className="card-body p-3 p-md-4 d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center gap-3">
+          <div className="vp-card vp-sap-card no-hover animate__animated animate__fadeIn mb-4">
+            <div className="vp-sap-info">
+              <div className="vp-sap-icon">
+                <i className="bi bi-filetype-csv"></i>
+              </div>
               <div>
-                <h6 className="mb-1 fw-bold text-dark">Base do SAP (CSV)</h6>
-                <small className="text-muted">Importe o arquivo gerado pelo SAP.</small>
+                <h3 className="vp-title">Base do SAP (CSV)</h3>
+                <p className="vp-subtitle">Importe a planilha oficial gerada pelo sistema SAP.</p>
               </div>
-              <div className="w-100 w-sm-auto">
-                <input type="file" accept=".csv" className="d-none" ref={fileInputRef} onChange={importarCSV} id="csvUpload" disabled={carregandoAcao} />
-                <label htmlFor="csvUpload" className={`btn btn-outline-secondary btn-sm w-100 w-sm-auto m-0 py-2 d-flex justify-content-center align-items-center gap-2 ${carregandoAcao ? 'disabled' : ''}`}>
-                  {carregandoAcao ? <span className="spinner-border spinner-border-sm"></span> : '📁'} 
-                  {carregandoAcao ? 'Salvando...' : 'Importar SAP'}
-                </label>
-              </div>
+            </div>
+            <div className="w-100 w-sm-auto">
+              <input type="file" accept=".csv" className="d-none" ref={fileInputRef} onChange={importarCSV} id="csvUpload" disabled={carregandoAcao} />
+              <label htmlFor="csvUpload" className={`vp-btn vp-btn-outline w-100 w-sm-auto d-flex justify-content-center align-items-center gap-2 ${carregandoAcao ? 'disabled' : ''}`} style={{ height: '44px' }}>
+                {carregandoAcao ? (
+                  <span className="spinner-border spinner-border-sm" role="status"></span>
+                ) : (
+                  <i className="bi bi-cloud-upload"></i>
+                )}
+                {carregandoAcao ? 'Salvando...' : 'Importar SAP'}
+              </label>
             </div>
           </div>
 
-          {usandoCamera ? (
-            <Scanner 
-              aoLerCodigo={adicionarBobina} 
-              aoCancelar={() => setUsandoCamera(false)} 
+          {usandoDrone ? (
+            <ProcessadorDrone
+              aoConcluir={processarLoteDrone}
+              aoCancelar={() => setUsandoDrone(false)}
             />
+          ) : usandoCamera ? (
+            <Scanner aoLerCodigo={adicionarBobina} aoCancelar={() => setUsandoCamera(false)} />
           ) : (
-            <div className="card shadow-sm border-0 mb-4">
-              <div className="card-body p-3 p-md-4 text-center">
-                <label htmlFor="inputBobina" className="form-label text-muted fw-semibold mb-3">
-                  Leitura de Bobina
-                </label>
-                
-                <div className="input-group input-group-lg shadow-sm mb-4">
-                  <textarea
-                    id="inputBobina"
-                    ref={inputRef}
-                    className="form-control border-end-0 fs-6 bg-light"
-                    value={codigo}
-                    onChange={(e) => setCodigo(e.target.value)}
-                    placeholder="Bipe ou digite os códigos (espaço, vírgula ou nova linha)..."
-                    autoComplete="off"
-                    disabled={carregandoAcao}
-                    rows={2}
-                    style={{ resize: 'none' }}
-                  />
-                  <button 
-                    className="btn btn-primary px-3 px-md-4" 
-                    style={{backgroundColor: '#d80404', border: 'none', fontSize: '0.95rem'}} 
-                    onClick={() => adicionarBobina()}
-                    disabled={carregandoAcao}
-                  >
-                    Adicionar
-                  </button>
-                </div>
-                
-                <button 
-                  className="btn btn-dark d-flex align-items-center justify-content-center gap-2 mx-auto w-100 py-2"
-                  onClick={() => setUsandoCamera(true)}
-                  style={{maxWidth: '100%'}}
+            <div className="vp-card no-hover mb-4" style={{ margin: 0 }}>
+              <span className="vp-micro-label">Leitura Ativa</span>
+              <h2 className="vp-title">Bipar Bobina</h2>
+              <p className="vp-subtitle" style={{ marginBottom: '1.25rem' }}>Utilize o leitor conectado, a câmera do celular ou processe em lote via drone.</p>
+
+              <div className="vp-input-group mb-3">
+                <textarea
+                  ref={inputRef}
+                  className="vp-input"
+                  placeholder="Bipe ou digite os códigos (espaço, vírgula ou Enter)..."
+                  value={codigo}
+                  onChange={(e) => setCodigo(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      if (!carregandoAcao) adicionarBobina();
+                    }
+                  }}
                   disabled={carregandoAcao}
+                  rows={2}
+                />
+                <button
+                  className="vp-btn vp-btn-primary"
+                  onClick={() => adicionarBobina()}
+                  disabled={carregandoAcao}
+                  style={{ padding: '0 1.75rem' }}
                 >
-                  <i className="bi bi-camera fs-5"></i> Ler com a Câmera
+                  <i className="bi bi-plus-lg"></i> Adicionar
                 </button>
+              </div>
+
+              <div className="vp-scanner-actions">
+                <button className="vp-btn vp-btn-dark flex-grow-1" onClick={() => setUsandoCamera(true)} disabled={carregandoAcao}>
+                  <i className="bi bi-camera"></i> Câmera Celular
+                </button>
+                {/* <button className="vp-btn vp-btn-outline flex-grow-1" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)' }} onClick={() => setUsandoDrone(true)} disabled={carregandoAcao}>
+                  <i className="bi bi-send-check"></i> Processar Drone
+                </button> */}
               </div>
             </div>
           )}
 
-          <div className="row g-2 g-sm-3 mb-4 text-center">
-            <div className="col-4">
-              <div className="p-2 p-sm-3 bg-white rounded shadow-sm border-bottom border-secondary border-3 h-100 d-flex flex-column justify-content-center">
-                <h6 className="text-muted mb-1" style={{fontSize: '0.75rem', textTransform: 'uppercase'}}>Esperadas</h6>
-                <h5 className="mb-0 fw-bold">{qtdEsperadas}</h5>
+          <div className="vp-counters-container animate__animated animate__fadeIn mb-4">
+            <div className="vp-counter-card esperadas">
+              <div className="vp-counter-header">
+                <span className="vp-counter-label">Esperadas</span>
+                <i className="bi bi-calculator"></i>
               </div>
+              <h3 className="vp-counter-value">{qtdEsperadas}</h3>
             </div>
-            <div className="col-4">
-              <div className="p-2 p-sm-3 bg-white rounded shadow-sm border-bottom border-success border-3 h-100 d-flex flex-column justify-content-center">
-                <h6 className="text-muted mb-1" style={{fontSize: '0.75rem', textTransform: 'uppercase'}}>Lidas</h6>
-                <h5 className="mb-0 fw-bold text-success">{qtdLidas}</h5>
+
+            <div className="vp-counter-card lidas">
+              <div className="vp-counter-header">
+                <span className="vp-counter-label">Lidas</span>
+                <i className="bi bi-check-circle"></i>
               </div>
+              <h3 className="vp-counter-value">{qtdLidas}</h3>
             </div>
-            <div className="col-4">
-              <div className="p-2 p-sm-3 bg-white rounded shadow-sm border-bottom border-danger border-3 h-100 d-flex flex-column justify-content-center">
-                <h6 className="text-muted mb-1" style={{fontSize: '0.75rem', textTransform: 'uppercase'}}>Faltam</h6>
-                <h5 className="mb-0 fw-bold text-danger">{qtdFaltam}</h5>
+
+            <div className="vp-counter-card faltam">
+              <div className="vp-counter-header">
+                <span className="vp-counter-label">Faltam</span>
+                <i className="bi bi-exclamation-circle"></i>
               </div>
+              <h3 className="vp-counter-value">{qtdFaltam}</h3>
             </div>
           </div>
 
-          <div className="d-flex flex-column flex-sm-row justify-content-center gap-2 mb-4">
-            <button onClick={gerarRelatorio} className="btn btn-outline-danger d-flex align-items-center justify-content-center gap-2 w-100 py-2 fw-semibold">
-              <i className="bi bi-file-earmark-excel"></i> Exportar Relatório
+          <div className="vp-bottom-actions animate__animated animate__fadeIn mb-4">
+            <button onClick={gerarRelatorio} className="vp-btn vp-btn-outline w-100 py-3 fw-semibold gap-2" style={{ borderColor: 'var(--vp-green)', color: 'var(--vp-green)', height: '52px' }}>
+              <i className="bi bi-file-earmark-spreadsheet fs-5"></i> Exportar Relatório Conciliado
             </button>
-          </div>
 
-          <div className="d-flex justify-content-center mb-5 mt-4">
-            <button onClick={limparDados} className="btn fs-6 btn-link text-danger text-decoration-none d-flex align-items-center gap-2 p-2 w-100 justify-content-center">
+            <button onClick={limparDados} className="vp-btn vp-btn-ghost-danger w-100 py-3 text-decoration-none gap-2" style={{ height: '52px', marginTop: '0.25rem' }}>
               <i className="bi bi-arrow-counterclockwise fs-5"></i> Iniciar Novo Inventário
             </button>
           </div>
-          
+
           {relatorioNaTela.length > 0 && (
             <>
-              <div className="card shadow-sm border-0 mb-4 animate__animated animate__fadeIn overflow-hidden">
+              {/* DESKTOP TABLE VIEW */}
+              <div className="vp-desktop-table-wrapper card shadow-sm border-0 mb-4 animate__animated animate__fadeIn overflow-hidden">
                 <div className="card-body p-0 table-responsive">
-                  <table className="table table-hover mb-0 text-center align-middle" style={{whiteSpace: 'nowrap'}}>
+                  <table className="table table-hover mb-0 text-center align-middle" style={{ whiteSpace: 'nowrap' }}>
                     <thead className="table-dark">
                       <tr>
-                        <th className="py-3 px-3">Lote/Código</th>
-                        <th className="py-3 px-3">Status</th>
-                        <th className="py-3 px-3" style={{width: '60px'}}>Ação</th>
+                        <th className="py-3 px-3 text-start text-sm-center" style={{ width: '40%' }}>Lote/Código</th>
+                        <th className="py-3 px-3" style={{ width: '40%' }}>Status</th>
+                        <th className="py-3 px-3" style={{ width: '20%' }}>Ação</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {relatorioNaTela.map((item, idx) => (
-                        <tr key={idx} className={item.tipo === 'faltando' ? 'table-danger opacity-75' : ''}>
-                          <td className="fw-bold py-3 px-3 text-start text-sm-center">{item.codigo}</td>
-                          <td className="px-3">
-                            {item.tipo === 'ok' && <span className="badge bg-success w-100 py-2">OK (Lida)</span>}
-                            {item.tipo === 'faltando' && <span className="badge bg-danger w-100 py-2">Faltando</span>}
-                            {item.tipo === 'sobrando' && <span className="badge bg-warning text-dark w-100 py-2">Sobra</span>}
-                            {!item.tipo && <span className="badge bg-secondary w-100 py-2">{item.status}</span>}
-                          </td>
-                          <td className="px-3">
-                            {item.tipo !== 'faltando' && (
-                              <button 
-                                className="btn btn-sm btn-outline-danger border-0" 
-                                onClick={() => removerBobina(item.codigo)}
-                                title="Excluir leitura"
-                                disabled={carregandoAcao}
-                              >
-                                <i className="bi bi-trash fs-5"></i>
-                              </button>
+                      {relatorioNaTela.map((item, idx) => {
+                        const expandido = lotesExpandidos[item.codigo];
+                        return (
+                          <React.Fragment key={idx}>
+                            <tr
+                              className={`vp-table-row-main ${item.tipo === 'faltando' ? 'table-danger opacity-75' : ''} ${expandido ? 'vp-row-expanded' : ''}`}
+                              onClick={() => toggleLoteExpandido(item.codigo)}
+                              style={{ cursor: 'pointer' }}
+                            >
+                              <td className="fw-bold py-3 px-3 text-start text-sm-center">
+                                <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
+                                <span className="vp-mono">{item.codigo}</span>
+                              </td>
+                              <td className="px-3">
+                                {item.tipo === 'ok' && <span className="badge bg-success w-100 py-2">OK (Lida)</span>}
+                                {item.tipo === 'faltando' && <span className="badge bg-danger w-100 py-2">Faltando</span>}
+                                {item.tipo === 'sobrando' && <span className="badge bg-warning text-dark w-100 py-2">Sobra</span>}
+                                {!item.tipo && <span className="badge bg-secondary w-100 py-2">{item.status}</span>}
+                              </td>
+                              <td className="px-3" onClick={(e) => e.stopPropagation()}>
+                                {item.tipo !== 'faltando' && (
+                                  <button
+                                    className="btn btn-sm btn-outline-danger border-0"
+                                    onClick={() => removerBobina(item.codigo)}
+                                    title="Excluir leitura"
+                                    disabled={carregandoAcao}
+                                  >
+                                    <i className="bi bi-trash fs-5"></i>
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                            {expandido && (
+                              <tr className="vp-table-row-details">
+                                <td colSpan="3" className="p-0 border-0">
+                                  <div className="vp-row-details-content p-3 bg-light text-start border-bottom">
+                                    <div className="row g-3">
+                                      <div className="col-12 col-md-6">
+                                        <div className="vp-detail-block">
+                                          <span className="vp-detail-label">Material & Descrição</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.material || '-'} - {item.descricao || '-'}</div>
+                                        </div>
+                                      </div>
+                                      <div className="col-6 col-md-3">
+                                        <div className="vp-detail-block">
+                                          <span className="vp-detail-label">Depósito / Armazém</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.deposito || '-'}</div>
+                                        </div>
+                                      </div>
+                                      <div className="col-6 col-md-3">
+                                        <div className="vp-detail-block">
+                                          <span className="vp-detail-label">Peso Líquido</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.peso_liquido ? `${item.peso_liquido} kg` : '-'}</div>
+                                        </div>
+                                      </div>
+                                      <div className="col-6 col-md-3">
+                                        <div className="vp-detail-block">
+                                          <span className="vp-detail-label">Largura x Espessura</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.largura && item.espessura ? `${item.largura} mm x ${item.espessura} µm` : '-'}</div>
+                                        </div>
+                                      </div>
+                                      <div className="col-6 col-md-3">
+                                        <div className="vp-detail-block">
+                                          <span className="vp-detail-label">Ordem Produção / Venda</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">OP: {item.ordem_producao || '-'} / OV: {item.ordem_venda || '-'}</div>
+                                        </div>
+                                      </div>
+                                      <div className="col-12 col-md-6">
+                                        <div className="vp-detail-block">
+                                          <span className="vp-detail-label">Cliente</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.cliente || '-'} - {item.nome_cliente || '-'}</div>
+                                        </div>
+                                      </div>
+                                      <div className="col-12 border-top pt-2 mt-2">
+                                        <small className="text-muted">
+                                          <i className="bi bi-clock me-1"></i>
+                                          {item.dataHora !== '-' ? `Bipada em ${item.dataHora} por ${item.nome_operador} (${item.cracha})` : 'Aguardando bipagem.'}
+                                        </small>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
                             )}
-                          </td>
-                        </tr>
-                      ))}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+              </div>
+
+              {/* MOBILE CARDS VIEW */}
+              <div className="vp-mobile-cards-list animate__animated animate__fadeIn">
+                {relatorioNaTela.map((item, idx) => {
+                  const expandido = lotesExpandidos[item.codigo];
+                  return (
+                    <div
+                      key={idx}
+                      className={`vp-mobile-report-card ${item.tipo || 'default'} ${expandido ? 'expanded' : ''}`}
+                      onClick={() => toggleLoteExpandido(item.codigo)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <div className="vp-mobile-card-header">
+                        <span className="vp-mobile-card-lote">
+                          <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
+                          <i className="bi bi-box-seam me-1 text-primary"></i> <span className="vp-mono">{item.codigo}</span>
+                        </span>
+                        <div className="vp-mobile-card-actions" onClick={(e) => e.stopPropagation()}>
+                          {item.tipo !== 'faltando' && (
+                            <button
+                              className="vp-btn-delete"
+                              onClick={() => removerBobina(item.codigo)}
+                              disabled={carregandoAcao}
+                              title="Excluir leitura"
+                            >
+                              <i className="bi bi-trash"></i>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="vp-mobile-card-body">
+                        <div className="vp-mobile-card-row">
+                          <span className="vp-mobile-card-label">Status:</span>
+                          <span className={`vp-mobile-card-badge ${item.tipo || 'default'}`}>
+                            {item.tipo === 'ok' && 'Lida / SAP OK'}
+                            {item.tipo === 'faltando' && 'Faltando (Não Bipada)'}
+                            {item.tipo === 'sobrando' && 'Sobrando (Não SAP)'}
+                            {!item.tipo && item.status}
+                          </span>
+                        </div>
+
+                        <div className="vp-mobile-card-details">
+                          <div className="vp-detail-item">
+                            <span className="vp-detail-label">Data/Hora:</span>
+                            <span className="vp-detail-value">{item.dataHora || '-'}</span>
+                          </div>
+                          <div className="vp-detail-item">
+                            <span className="vp-detail-label">Operador:</span>
+                            <span className="vp-detail-value">{item.nome_operador || '-'}</span>
+                          </div>
+                        </div>
+
+                        {expandido && (
+                          <div className="vp-mobile-card-extra border-top pt-2 mt-2">
+                            <div className="vp-detail-block mb-2">
+                              <span className="vp-detail-label">Material & Descrição</span>
+                              <div className="vp-detail-val small fw-semibold text-dark">{item.material || '-'} - {item.descricao || '-'}</div>
+                            </div>
+                            <div className="row g-2 mb-2">
+                              <div className="col-6">
+                                <div className="vp-detail-block">
+                                  <span className="vp-detail-label">Depósito</span>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.deposito || '-'}</div>
+                                </div>
+                              </div>
+                              <div className="col-6">
+                                <div className="vp-detail-block">
+                                  <span className="vp-detail-label">Peso Líquido</span>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.peso_liquido ? `${item.peso_liquido} kg` : '-'}</div>
+                                </div>
+                              </div>
+                              <div className="col-6">
+                                <div className="vp-detail-block">
+                                  <span className="vp-detail-label">Dimensões</span>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.largura && item.espessura ? `${item.largura}mm x ${item.espessura}µm` : '-'}</div>
+                                </div>
+                              </div>
+                              <div className="col-6">
+                                <div className="vp-detail-block">
+                                  <span className="vp-detail-label">OP / OV</span>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.ordem_producao || '-'} / {item.ordem_venda || '-'}</div>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="vp-detail-block">
+                              <span className="vp-detail-label">Cliente</span>
+                              <div className="vp-detail-val small fw-semibold text-dark">{item.cliente || '-'} - {item.nome_cliente || '-'}</div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}

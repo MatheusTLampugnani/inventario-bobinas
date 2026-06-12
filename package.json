@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",
+    "@zxing/library": "^0.21.3",
     "bootstrap": "^5.3.8",
     "html5-qrcode": "^2.3.8",
+    "jsqr": "^1.4.0",
     "react": "^19.2.0",
     "react-bootstrap": "^2.10.10",
     "react-bootstrap-icons": "^1.11.6",

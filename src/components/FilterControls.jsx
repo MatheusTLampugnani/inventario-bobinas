@@ -24,7 +24,7 @@ const FilterControls = ({
   };
 
   return (
-    <div className="my-4 p-3 border rounded bg-light shadow-sm text-start">
+    <div className="my-4 p-3 border rounded bg-white shadow-sm text-start" style={{ borderColor: 'var(--vp-border)' }}>
       <Row className="g-3 align-items-end">
         <Col xl={2} lg={3} md={4} xs={12}>
           <Form.Group>

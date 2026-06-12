@@ -23,3 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Python backend
+backend/.venv/
+backend/env/
+backend/__pycache__/
+backend/*.pyc
+backend/temp_*

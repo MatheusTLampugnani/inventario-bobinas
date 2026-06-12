@@ -1,31 +1,62 @@
-# Inventário de Bobinas
+# Inventário de Bobinas — Videplast
+
+Sistema web de alta performance desenvolvido sob medida para facilitar, agilizar e garantir a integridade do inventário físico e conciliação de estoque de bobinas industriais, comparando leituras reais com dados oficiais do SAP.
+
+---
 
 ## Propósito do Projeto
-Este projeto é um sistema web desenvolvido para facilitar e automatizar o processo de inventário e conferência de bobinas. O seu propósito principal é permitir que os operadores de estoque ou produção cruzem as informações físicas (bobinas bipadas/lidas no local) com a base de dados oficial gerada pelo sistema SAP. 
+O propósito principal deste sistema é cruzar de forma inteligente e em tempo real as informações físicas (bobinas localizadas no galpão logístico) com o arquivo de exportação oficial do sistema SAP. 
 
-O sistema identifica rapidamente discrepâncias, mostrando quais bobinas foram lidas com sucesso, quais estão faltando e quais foram encontradas fisicamente mas não constam no sistema SAP, garantindo assim a integridade e precisão do inventário.
+A aplicação identifica discrepâncias instantaneamente, apontando o status exato de cada lote:
+- **OK (Lida):** Bobina esperada que foi bipada/lida fisicamente com sucesso.
+- **Faltando:** Bobina cadastrada no SAP que ainda não foi encontrada no galpão.
+- **Sobra (Não SAP):** Bobina encontrada e bipada no local físico, mas que não consta no planejamento importado do SAP.
+
+---
 
 ## Funcionalidades Principais
 
-* **Autenticação Simples (Crachá):** O acesso ao sistema é feito através da inserção do número do crachá do operador, com validação de identidade diretamente no banco de dados.
-* **Importação de Dados SAP (CSV):** Permite o upload de um arquivo CSV exportado do SAP contendo a relação de bobinas esperadas para o inventário. O sistema extrai automaticamente dados como Lote, Material, Ordem de Produção, Cliente, Peso, entre outros.
-* **Leitura de Bobinas:**
-  * **Leitor de Código de Barras / Digitação:** Entrada rápida do código/lote da bobina através de leitores USB/Bluetooth ou digitação manual.
-  * **Leitura via Câmera:** Integração nativa para ler códigos de barras utilizando a câmera do dispositivo móvel ou webcam.
-* **Validação em Tempo Real:** Ao ler uma bobina, o sistema cruza imediatamente a informação com a base do SAP, alertando o operador caso a bobina já tenha sido lida ou se ela não constar na lista de bobinas esperadas.
-* **Dashboard de Acompanhamento:** Exibição clara das métricas do inventário em andamento:
-  * Quantidade de bobinas **Esperadas**.
-  * Quantidade de bobinas **Lidas**.
-  * Quantidade de bobinas que **Faltam**.
-* **Tela de Conferência:** Um modal dedicado onde o operador pode visualizar, pesquisar (por lote ou data) e ordenar todas as leituras que ele realizou.
-* **Geração de Relatórios:** Exportação de um relatório consolidado completo em formato CSV. O relatório detalha o status de cada bobina (OK, Faltando, ou Sobrando) juntamente com todas as suas informações do SAP e dados de quem realizou a leitura.
-* **Sincronização em Nuvem:** Os dados da sessão de inventário, o arquivo do SAP e as bobinas lidas são salvos em tempo real em um banco de dados (Supabase), prevenindo perda de informações.
+### 1. Autenticação por Crachá Corporativo
+- Validação rápida de crachás diretamente contra a base de dados integrada no Supabase.
+- Geração automática de iniciais com **Avatar Dinâmico** estilizado para o painel do operador logado.
+
+### 2. Importação SAP (CSV Inteligente)
+- Upload de arquivos CSV exportados do SAP contendo a relação esperada.
+- Leitura automatizada tolerante a codificações de caracteres (ISO-8859-1 / UTF-8) e delimitadores variados (`,` ou `;`).
+- Extração de metadados como: *Lote, Material, Descrição, Depósito, Ordem de Produção, Ordem de Venda, Cliente, Nome do Cliente, Peso Líquido, Largura e Espessura*.
+
+### 3. Métodos Avançados de Leitura (Tríplice Entrada)
+- **Leitor de Código de Barras Físico:** Interface otimizada com campo de texto (`textarea` inteligente) tolerante a bipadas consecutivas separadas por espaços, vírgulas ou quebras de linha.
+- **Câmera do Celular:** Scanner nativo embutido que usa a webcam ou a câmera traseira do smartphone (`facingMode: "environment"`) para capturar e decodificar códigos instantaneamente.
+- **Processamento de Drone (Lote por Vídeo):** *[NOVO]* Módulo revolucionário que permite fazer upload de gravações em vídeo (MP4) capturadas por drones voando pelos corredores do estoque. O sistema analisa frame por frame a 1.5x de velocidade, extrai dezenas de códigos QR e códigos de barra simultaneamente em lote e realiza o **Bulk Insert** (inserção em massa) diretamente no banco de dados.
+
+### 4. Responsividade Extrema & Mobile-First
+- Desenvolvido especificamente para **telefones celulares**, o dispositivo primário dos operadores no galpão.
+- **Visualização Híbrida de Relatórios:**
+  - *Telas Grandes:* Exibe uma tabela clássica de conciliação com cabeçalho fixo escuro.
+  - *Telas Móveis:* Oculta a tabela e exibe uma **Lista de Cards Verticais** que se encaixam perfeitamente na largura do celular, com badges coloridos e botões táteis dimensionados para evitar toques incorretos.
+
+### 5. Estética Premium e Refinamento Visual
+- **Interface Glassmorphism & Neon:** Efeitos de profundidade, sombras suaves e gradientes com o vermelho corporativo da Videplast.
+- **Cards Estáveis (No-Hover):** Cards interativos de bipagem e importação mantêm-se estáticos durante a manipulação para evitar movimentos incômodos na tela de uso contínuo.
+- **Contadores de Impacto:** Caixas de métricas com gradientes sutis e sombras coloridas difusas de acordo com o status (Esperadas, Lidas, Faltam).
+
+### 6. Relatórios & Sincronização em Nuvem
+- **Exportação Excel/CSV:** Gera planilhas completas com codificação `\uFEFF` (garantindo compatibilidade perfeita de acentos e caracteres especiais com o Microsoft Excel brasileiro) contendo todos os dados do SAP cruzados com quem bipou e o horário da leitura.
+- **Sincronização Supabase:** Gravação automática em nuvem e sessionStorage persistente local para evitar qualquer perda de progresso em caso de recarregamento acidental ou oscilação de rede Wi-Fi/4G.
+
+---
 
 ## Tecnologias Utilizadas
 
-O sistema foi construído focando em performance, responsividade e facilidade de uso em dispositivos móveis e desktops.
+O ecossistema técnico foi planejado para carregamento instantâneo, portabilidade e desacoplamento:
 
-* **Frontend:** React (inicializado com Vite)
-* **Estilização e UI:** CSS Vanilla e Bootstrap (via `react-bootstrap` e `bootstrap`) para componentes responsivos e ícones (`react-bootstrap-icons`).
-* **Backend / Banco de Dados (BaaS):** Supabase (armazenamento das sessões, crachás, bobinas do SAP e bobinas lidas).
-* **Leitura de Câmera:** `html5-qrcode` para decodificação de códigos diretamente no navegador.
+- **Core & Componentes:** [React](https://react.dev/) + [Vite](https://vite.dev/) (Builds e HMR ultra velozes)
+- **Banco de Dados & Back-end:** [Supabase](https://supabase.com/) (PostgreSQL BaaS com autenticação e persistência robusta)
+- **Styling:** CSS Vanilla premium de alta performance + Bootstrap (via `react-bootstrap` para componentes estruturais de modal)
+- **Biblioteca de Ícones:** Bootstrap Icons
+- **Leitura via Câmera (Real-time):** [html5-qrcode](https://github.com/mebjas/html5-qrcode) (Acesso à câmera do dispositivo e decodificação)
+- **Processamento de Drone (Visão computacional de QR):** [jsQR](https://github.com/cozmo/jsQR) (Varredura de frames de vídeo para decodificação em lote)
+- **Animações Fluidas:** Animate.css
+
+---
