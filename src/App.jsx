@@ -53,10 +53,10 @@ function App() {
   const [showConferencia, setShowConferencia] = useState(false);
   const [lotesExpandidos, setLotesExpandidos] = useState({});
 
-  const toggleLoteExpandido = (lote) => {
+  const toggleLoteExpandido = (loteKey) => {
     setLotesExpandidos(prev => ({
       ...prev,
-      [lote]: !prev[lote]
+      [loteKey]: !prev[loteKey]
     }));
   };
 
@@ -92,13 +92,13 @@ function App() {
   // FUNÇÕES DE MODAL
   const fecharModal = () => setModal({ ...modal, show: false });
 
-  const abrirAlerta = (titulo, mensagem) => {
-    setModal({ show: true, title: titulo, message: mensagem, type: 'alert', onConfirm: null });
+  const abrirAlerta = (titulo, message) => {
+    setModal({ show: true, title: titulo, message: message, type: 'alert', onConfirm: null });
   }
 
-  const abrirConfirmacao = (titulo, mensagem, acaoConfirmar) => {
+  const abrirConfirmacao = (titulo, message, acaoConfirmar) => {
     setModal({
-      show: true, title: titulo, message: mensagem, type: 'confirm',
+      show: true, title: titulo, message: message, type: 'confirm',
       onConfirm: () => { acaoConfirmar(); fecharModal(); }
     });
   }
@@ -127,6 +127,7 @@ function App() {
       }
 
       if (data) {
+        console.log("DADOS QUE CHEGARAM DO SUPABASE:", data);
         setCrachaLogado(inputCracha.trim());
         setNomeLogado(data.nome_completo || 'Operador');
         setIsAdmin(!!data.admin);
@@ -193,37 +194,61 @@ function App() {
   const abrirConferenciaAdmin = async () => {
     setShowConferencia(true);
 
-    if (isAdmin) {
-      setCarregandoAcao(true);
-      try {
-        const { data: leituras, error: erroLeituras } = await supabase
-          .from('bobinas_lidas')
-          .select('*');
+    setCarregandoAcao(true);
+    try {
+      const { data: leituras, error: erroLeituras } = await supabase
+        .from('bobinas_lidas')
+        .select('*');
 
-        const { data: crachas, error: erroCrachas } = await supabase
-          .from('crachas')
-          .select('id, nome_completo');
+      const { data: crachas } = await supabase
+        .from('crachas')
+        .select('id, nome_completo');
 
-        if (erroLeituras) throw erroLeituras;
+      // Busca também a base de dados SAP do banco para cruzar as informações completas
+      const { data: sapBanco } = await supabase
+        .from('bobinas_sap')
+        .select('*');
 
-        if (leituras) {
-          const listaGlobal = leituras.map(b => {
-            const dono = crachas?.find(c => c.id === b.cracha_leitura);
-            return {
-              codigo: b.lote,
-              dataHora: b.created_at ? new Date(b.created_at).toLocaleString('pt-BR') : '-',
-              cracha: b.cracha_leitura,
-              nome: dono ? dono.nome_completo : b.cracha_leitura
-            };
-          });
+      if (erroLeituras) throw erroLeituras;
 
-          setLeiturasGlobais(listaGlobal);
-        }
-      } catch (err) {
-        console.error("Erro ao sincronizar as leituras globais:", err);
-      } finally {
-        setCarregandoAcao(false);
+      if (leituras) {
+        const listaGlobal = leituras.map(b => {
+          const dono = crachas?.find(c => c.id === b.cracha_leitura);
+
+          // Tenta encontrar os dados no SAP importados no banco ou na memória do CSV local
+          const dadosSap = sapBanco?.find(s => s.lote === b.lote) || csvBobinas.find(c => c.lote === b.lote);
+
+          const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
+          let dataFormatada = '-';
+          if (dataOriginal) {
+            dataFormatada = new Date(dataOriginal).toLocaleString('pt-BR');
+          }
+
+          return {
+            codigo: b.lote,
+            dataHora: dataFormatada,
+            cracha: b.cracha_leitura,
+            nome: dono ? dono.nome_completo : b.cracha_leitura,
+            // Acoplando todas as chaves de informações do lote
+            material: dadosSap ? (dadosSap.material || '-') : '-',
+            descricao: dadosSap ? (dadosSap.descricao || '-') : '-',
+            deposito: dadosSap ? (dadosSap.deposito || '-') : '-',
+            peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
+            largura: dadosSap ? (dadosSap.largura || '-') : '-',
+            espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
+            ordem_producao: dadosSap ? (dadosSap.ordem_producao || '-') : '-',
+            ordem_venda: dadosSap ? (dadosSap.ordem_venda || '-') : '-',
+            cliente: dadosSap ? (dadosSap.cliente || '-') : '-',
+            nome_cliente: dadosSap ? (dadosSap.nome_cliente || '-') : '-'
+          };
+        });
+
+        setLeiturasGlobais(listaGlobal);
       }
+    } catch (err) {
+      console.error("Erro ao sincronizar as leituras globais:", err);
+    } finally {
+      setCarregandoAcao(false);
     }
   };
 
@@ -238,7 +263,7 @@ function App() {
     reader.onload = async (event) => {
       try {
         const text = event.target.result;
-        const linhas = text.split(/\r?\n/).filter(linha => linha.trim() !== '');
+        const linhas = text.split(/\r?\n/).filter(linha => App.css !== '' && linha.trim() !== '');
 
         if (linhas.length === 0) {
           setCarregandoAcao(false);
@@ -331,7 +356,7 @@ function App() {
           }
         }
 
-        const idSessaoAtiva = await garantirSessao();
+        const idSessaoAtiva = await garantizarSessao();
 
         const dadosParaBanco = codigosExtraidos.map(item => ({
           sessao_id: idSessaoAtiva,
@@ -373,7 +398,6 @@ function App() {
     if (!textoLido) return;
 
     const textoLimpo = textoLido.toUpperCase().replace(/[\r\n\t]+/g, ' ');
-
     const regexValidos = /(RA|MA|VA)\d+/g;
     let lotesExtraidos = textoLimpo.match(regexValidos) || [];
 
@@ -544,15 +568,15 @@ function App() {
         cracha: b.cracha,
         nome_operador: b.nome,
         material: bobinaSAP ? bobinaSAP.material : '-',
-        ordem_producao: bobinaSAP ? bobinaSAP.ordem_producao : '-',
-        cliente: bobinaSAP ? bobinaSAP.cliente : '-',
-        nome_cliente: bobinaSAP ? bobinaSAP.nome_cliente : '-',
+        descricao: bobinaSAP ? bobinaSAP.descricao : '-',
+        deposito: bobinaSAP ? bobinaSAP.deposito : '-',
         peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-',
         largura: bobinaSAP ? bobinaSAP.largura : '-',
         espessura: bobinaSAP ? bobinaSAP.espessura : '-',
-        deposito: bobinaSAP ? bobinaSAP.deposito : '-',
-        descricao: bobinaSAP ? bobinaSAP.descricao : '-',
+        ordem_producao: bobinaSAP ? bobinaSAP.ordem_producao : '-',
         ordem_venda: bobinaSAP ? bobinaSAP.ordem_venda : '-',
+        cliente: bobinaSAP ? bobinaSAP.cliente : '-',
+        nome_cliente: bobinaSAP ? bobinaSAP.nome_cliente : '-',
         tipo: isOk ? 'ok' : 'sobrando'
       });
     });
@@ -566,15 +590,15 @@ function App() {
           cracha: '-',
           nome_operador: '-',
           material: c.material || '-',
-          ordem_producao: c.ordem_producao || '-',
-          cliente: c.cliente || '-',
-          nome_cliente: c.nome_cliente || '-',
+          descricao: c.descricao || '-',
+          deposito: c.deposito || '-',
           peso_liquido: c.peso_liquido || '-',
           largura: c.largura || '-',
           espessura: c.espessura || '-',
-          deposito: c.deposito || '-',
-          descricao: c.descricao || '-',
+          ordem_producao: c.ordem_producao || '-',
           ordem_venda: c.ordem_venda || '-',
+          cliente: c.cliente || '-',
+          nome_cliente: c.nome_cliente || '-',
           tipo: 'faltando'
         });
       }
@@ -612,7 +636,6 @@ function App() {
   const qtdLidas = bobinasLidas.length;
   const qtdEsperadas = csvBobinas.length;
   const qtdFaltam = Math.max(0, qtdEsperadas - bobinasLidas.filter(b => csvBobinas.some(c => c.lote === b.codigo)).length);
-
 
   if (!crachaLogado) {
     return (
@@ -672,13 +695,26 @@ function App() {
     );
   }
 
-  // ==========================================
-  // CORREÇÃO: O modal de conferência puxa os dados globais.
-  // A tela principal continuará puxando 'bobinasLidas'
-  // ==========================================
+  // Se for admin, exibe o histórico global; se não for, exibe os lotes injetados com a info do CSV local
   let leiturasProcessadas = isAdmin
     ? leiturasGlobais
-    : bobinasLidas;
+    : bobinasLidas.map(b => {
+      const bSap = csvBobinas.find(c => c.lote === b.codigo);
+      return {
+        ...b,
+        codigo: b.codigo,
+        material: bSap ? (bSap.material || '-') : '-',
+        descricao: bSap ? (bSap.descricao || '-') : '-',
+        deposito: bSap ? (bSap.deposito || '-') : '-',
+        peso_liquido: bSap ? (bSap.peso_liquido || '-') : '-',
+        largura: bSap ? (bSap.largura || '-') : '-',
+        espessura: bSap ? (bSap.espessura || '-') : '-',
+        ordem_producao: bSap ? (bSap.ordem_producao || '-') : '-',
+        ordem_venda: bSap ? (bSap.ordem_venda || '-') : '-',
+        cliente: bSap ? (bSap.cliente || '-') : '-',
+        nome_cliente: bSap ? (bSap.nome_cliente || '-') : '-'
+      };
+    });
 
   if (conferenciaFilters.lote) {
     leiturasProcessadas = leiturasProcessadas.filter(b =>
@@ -734,7 +770,7 @@ function App() {
         </div>
       )}
 
-      {/* MODAL DE CONFERÊNCIA */}
+      {/* MODAL DE CONFERÊNCIA (HISTÓRICO EXPANSÍVEL COM DETALHES DO SAP) */}
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
@@ -775,13 +811,50 @@ function App() {
                           </td>
                         </tr>
                       ) : (
-                        leiturasProcessadas.map((leitura, index) => (
-                          <tr key={index}>
-                            <td className="fw-bold">{leitura.codigo}</td>
-                            {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
-                            <td>{leitura.dataHora}</td>
-                          </tr>
-                        ))
+                        leiturasProcessadas.map((leitura, index) => {
+                          const confKey = `${leitura.codigo}_conf_${index}`;
+                          const expandido = lotesExpandidos[confKey];
+                          return (
+                            <React.Fragment key={index}>
+                              <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
+                                <td className="fw-bold text-primary">
+                                  <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
+                                  <span className="vp-mono">{leitura.codigo}</span>
+                                </td>
+                                {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
+                                <td>{leitura.dataHora}</td>
+                              </tr>
+                              {expandido && (
+                                <tr>
+                                  <td colSpan={isAdmin ? 3 : 2} className="p-0 border-0">
+                                    <div className="p-3 bg-light text-start border-bottom small text-dark animate__animated animate__fadeIn">
+                                      <div className="row g-2">
+                                        <div className="col-12 col-md-6">
+                                          <strong>Material & Descrição:</strong> {leitura.material} - {leitura.descricao}
+                                        </div>
+                                        <div className="col-6 col-md-3">
+                                          <strong>Depósito:</strong> {leitura.deposito}
+                                        </div>
+                                        <div className="col-6 col-md-3">
+                                          <strong>Peso Líquido:</strong> {leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}
+                                        </div>
+                                        <div className="col-6 col-md-4">
+                                          <strong>Dimensões:</strong> {leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura}mm x ${leitura.espessura}µm` : '-'}
+                                        </div>
+                                        <div className="col-6 col-md-4">
+                                          <strong>OP / OV:</strong> OP: {leitura.ordem_producao} / OV: {leitura.ordem_venda}
+                                        </div>
+                                        <div className="col-12 col-md-4">
+                                          <strong>Cliente:</strong> {leitura.cliente} - {leitura.nome_cliente}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
