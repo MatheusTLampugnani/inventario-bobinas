@@ -229,7 +229,6 @@ function App() {
             dataFormatada = new Date(dataOriginal).toLocaleString('pt-BR');
           }
 
-          // AVALIAÇÃO DE FILIAL: Pega do lido, ou do SAP, ou obriga a usar a regra das letras
           const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
 
           return {
@@ -349,7 +348,6 @@ function App() {
             const lote = colunas[idxLote];
             if (lote && lote !== '') {
 
-              // TRATAMENTO DE SEGURANÇA PARA A FILIAL
               let filialLida = idxCentro !== -1 ? colunas[idxCentro] : null;
               if (!filialLida || filialLida.trim() === '') {
                 filialLida = determinarFilial(lote);
@@ -738,7 +736,7 @@ function App() {
             className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2"
             onClick={fazerLogin}
             disabled={carregandoLogin}
-            style={{ backgroundColor: '#c50000ff', border: 'none', fontSize: '1rem' }}
+            style={{ backgroundColor: '#d30909ff', border: 'none', fontSize: '1rem' }}
           >
             {carregandoLogin ? (
               <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
@@ -796,9 +794,6 @@ function App() {
     );
   }
 
-  // ==========================================
-  // LÓGICA DE ORDENAÇÃO
-  // ==========================================
   leiturasProcessadas.sort((a, b) => {
     if (conferenciaSort.field === 'Lote') {
       const valA = a.codigo || '';
@@ -855,7 +850,7 @@ function App() {
         </div>
       )}
 
-      {/* MODAL DE CONFERÊNCIA (HISTÓRICO EXPANSÍVEL COM NOVOS FILTROS DE FILIAL E DEPÓSITO) */}
+      {/* MODAL DE CONFERÊNCIA (HISTÓRICO EXPANSÍVEL COM RESPONSIVIDADE) */}
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
@@ -909,7 +904,8 @@ function App() {
                   </div>
                 </div>
 
-                <div className="table-responsive border rounded" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                {/* VISTA DE COMPUTADOR: Tabela Clássica */}
+                <div className="table-responsive border rounded d-none d-md-block" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   <table className="table table-hover text-center align-middle mb-0">
                     <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}>
                       <tr>
@@ -977,6 +973,89 @@ function App() {
                     </tbody>
                   </table>
                 </div>
+
+                {/* VISTA DE TELEMÓVEL: Cartões Responsivos */}
+                <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
+                  <div className="vp-mobile-cards-list">
+                    {leiturasProcessadas.length === 0 ? (
+                      <div className="text-center text-muted py-4">Nenhuma leitura encontrada com esses filtros.</div>
+                    ) : (
+                      leiturasProcessadas.map((leitura, index) => {
+                        const confKey = `${leitura.codigo}_conf_${index}`;
+                        const expandido = lotesExpandidos[confKey];
+                        return (
+                          <div key={index} className={`vp-mobile-report-card ok ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
+                            <div className="vp-mobile-card-header">
+                              <span className="vp-mobile-card-lote">
+                                <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
+                                <i className="bi bi-box-seam me-1 text-primary"></i> <span className="vp-mono">{leitura.codigo}</span>
+                              </span>
+                            </div>
+                            <div className="vp-mobile-card-body">
+                              <div className="vp-mobile-card-details">
+                                <div className="vp-detail-item">
+                                  <span className="vp-detail-label">Data/Hora:</span>
+                                  <span className="vp-detail-value">{leitura.dataHora}</span>
+                                </div>
+                                {isAdmin && (
+                                  <div className="vp-detail-item mt-1">
+                                    <span className="vp-detail-label">Operador:</span>
+                                    <span className="vp-detail-value">{leitura.nome || leitura.cracha}</span>
+                                  </div>
+                                )}
+                              </div>
+                              {expandido && (
+                                <div className="vp-mobile-card-extra border-top pt-2 mt-2">
+                                  <div className="vp-detail-block mb-2">
+                                    <span className="vp-detail-label">Material & Descrição</span>
+                                    <div className="vp-detail-val small fw-semibold text-dark">{leitura.material} - {leitura.descricao}</div>
+                                  </div>
+                                  <div className="row g-2 mb-2">
+                                    <div className="col-6">
+                                      <div className="vp-detail-block">
+                                        <span className="vp-detail-label">Depósito</span>
+                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.deposito}</div>
+                                      </div>
+                                    </div>
+                                    <div className="col-6">
+                                      <div className="vp-detail-block">
+                                        <span className="vp-detail-label">Filial</span>
+                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.filial}</div>
+                                      </div>
+                                    </div>
+                                    <div className="col-6">
+                                      <div className="vp-detail-block">
+                                        <span className="vp-detail-label">Peso Líquido</span>
+                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div>
+                                      </div>
+                                    </div>
+                                    <div className="col-6">
+                                      <div className="vp-detail-block">
+                                        <span className="vp-detail-label">Dimensões</span>
+                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura}mm x ${leitura.espessura}µm` : '-'}</div>
+                                      </div>
+                                    </div>
+                                    <div className="col-12">
+                                      <div className="vp-detail-block">
+                                        <span className="vp-detail-label">OP / OV</span>
+                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.ordem_producao} / {leitura.ordem_venda}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="vp-detail-block">
+                                    <span className="vp-detail-label">Cliente</span>
+                                    <div className="vp-detail-val small fw-semibold text-dark">{leitura.cliente} - {leitura.nome_cliente}</div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+
               </div>
               <div className="modal-footer border-0 justify-content-center pb-4">
                 <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto" onClick={() => setShowConferencia(false)}>
@@ -1054,7 +1133,7 @@ function App() {
                 <textarea
                   ref={inputRef}
                   className="vp-input"
-                  placeholder="Bipe ou digite os códigos (espaço, vírgula ou Enter)..."
+                  placeholder="Bipe ou digite os códigos (espaço, vírgula ou Enter)"
                   value={codigo}
                   onChange={(e) => setCodigo(e.target.value)}
                   onKeyDown={(e) => {
@@ -1320,7 +1399,7 @@ function App() {
                               <div className="col-6">
                                 <div className="vp-detail-block">
                                   <span className="vp-detail-label">Dimensões</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.largura !== '-' && item.espessura !== '-' ? `${item.largura}mm x ${item.espessura}µm` : '-'}</div>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.largura && item.espessura ? `${item.largura}mm x ${item.espessura}µm` : '-'}</div>
                                 </div>
                               </div>
                               <div className="col-12">
