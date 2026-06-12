@@ -444,7 +444,7 @@ textarea.vp-input {
 }
 
 .app-header .logo {
-  max-height: 48px;
+  max-height: 80px;
   width: auto;
   display: block;
   object-fit: contain;
@@ -674,6 +674,7 @@ textarea.vp-input {
   background: linear-gradient(135deg, var(--vp-surface) 0%, #f8fafc 100%);
   border-bottom: 4px solid var(--vp-text-muted);
 }
+
 .vp-counter-card.esperadas .vp-counter-value {
   color: var(--vp-text);
 }
@@ -683,9 +684,11 @@ textarea.vp-input {
   border-bottom: 4px solid var(--vp-green);
   border-color: rgba(16, 185, 129, 0.3);
 }
+
 .vp-counter-card.lidas .vp-counter-value {
   color: var(--vp-green);
 }
+
 .vp-counter-card.lidas i {
   color: var(--vp-green);
 }
@@ -695,9 +698,11 @@ textarea.vp-input {
   border-bottom: 4px solid var(--vp-red);
   border-color: rgba(216, 4, 4, 0.3);
 }
+
 .vp-counter-card.faltam .vp-counter-value {
   color: var(--vp-red);
 }
+
 .vp-counter-card.faltam i {
   color: var(--vp-red);
 }
@@ -705,12 +710,15 @@ textarea.vp-input {
 .vp-counter-card:hover {
   transform: translateY(-3px);
 }
+
 .vp-counter-card.esperadas:hover {
   box-shadow: 0 10px 20px -5px rgba(100, 116, 139, 0.1);
 }
+
 .vp-counter-card.lidas:hover {
   box-shadow: 0 10px 20px -5px rgba(16, 185, 129, 0.15);
 }
+
 .vp-counter-card.faltam:hover {
   box-shadow: 0 10px 20px -5px rgba(216, 4, 4, 0.15);
 }
@@ -762,9 +770,11 @@ textarea.vp-input {
 .vp-mobile-report-card.ok::before {
   background: var(--vp-green);
 }
+
 .vp-mobile-report-card.faltando::before {
   background: var(--vp-red);
 }
+
 .vp-mobile-report-card.sobrando::before {
   background: var(--vp-orange);
 }
@@ -901,7 +911,7 @@ textarea.vp-input {
   .app-header {
     padding: 1rem 0;
   }
-  
+
   .app-header .logo {
     max-height: 40px;
   }
@@ -969,7 +979,7 @@ textarea.vp-input {
     flex-direction: column;
     gap: 0.5rem;
   }
-  
+
   .vp-scanner-actions .vp-btn {
     width: 100%;
     justify-content: center;
@@ -1068,6 +1078,7 @@ textarea.vp-input {
 
 /* Evitando zoom automático em inputs no iOS */
 @media (max-width: 768px) {
+
   .vp-input,
   textarea.vp-input,
   .form-control,
@@ -1084,6 +1095,7 @@ textarea.vp-input {
     opacity: 0;
     transform: translateY(-8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -1094,6 +1106,7 @@ textarea.vp-input {
   from {
     opacity: 0;
   }
+
   to {
     opacity: 1;
   }
