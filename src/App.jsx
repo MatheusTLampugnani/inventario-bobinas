@@ -16,6 +16,15 @@ const obterIniciais = (nome) => {
   return partes[0].substring(0, 2).toUpperCase();
 };
 
+const determinarFilial = (lote) => {
+  if (!lote) return null;
+  const prefixo = lote.toUpperCase().substring(0, 2);
+  if (prefixo === 'VA') return '1001';
+  if (prefixo === 'RA') return '1005';
+  if (prefixo === 'MA') return '1003';
+  return null;
+};
+
 function App() {
   // ESTADOS DE LOGIN
   const [crachaLogado, setCrachaLogado] = useState(() => sessionStorage.getItem('usuario_cracha') || '');
@@ -26,7 +35,7 @@ function App() {
   const [leiturasGlobais, setLeiturasGlobais] = useState([]);
 
   // ESTADOS DO FILTRO DA CONFERÊNCIA
-  const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '' });
+  const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '' });
   const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
   const [usandoDrone, setUsandoDrone] = useState(false);
 
@@ -127,7 +136,6 @@ function App() {
       }
 
       if (data) {
-        console.log("DADOS QUE CHEGARAM DO SUPABASE:", data);
         setCrachaLogado(inputCracha.trim());
         setNomeLogado(data.nome_completo || 'Operador');
         setIsAdmin(!!data.admin);
@@ -204,7 +212,6 @@ function App() {
         .from('crachas')
         .select('id, nome_completo');
 
-      // Busca também a base de dados SAP do banco para cruzar as informações completas
       const { data: sapBanco } = await supabase
         .from('bobinas_sap')
         .select('*');
@@ -214,8 +221,6 @@ function App() {
       if (leituras) {
         const listaGlobal = leituras.map(b => {
           const dono = crachas?.find(c => c.id === b.cracha_leitura);
-
-          // Tenta encontrar os dados no SAP importados no banco ou na memória do CSV local
           const dadosSap = sapBanco?.find(s => s.lote === b.lote) || csvBobinas.find(c => c.lote === b.lote);
 
           const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
@@ -224,15 +229,18 @@ function App() {
             dataFormatada = new Date(dataOriginal).toLocaleString('pt-BR');
           }
 
+          // AVALIAÇÃO DE FILIAL: Pega do lido, ou do SAP, ou obriga a usar a regra das letras
+          const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
+
           return {
             codigo: b.lote,
             dataHora: dataFormatada,
             cracha: b.cracha_leitura,
             nome: dono ? dono.nome_completo : b.cracha_leitura,
-            // Acoplando todas as chaves de informações do lote
+            filial: filialFinal,
+            deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
             material: dadosSap ? (dadosSap.material || '-') : '-',
             descricao: dadosSap ? (dadosSap.descricao || '-') : '-',
-            deposito: dadosSap ? (dadosSap.deposito || '-') : '-',
             peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
             largura: dadosSap ? (dadosSap.largura || '-') : '-',
             espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
@@ -263,7 +271,7 @@ function App() {
     reader.onload = async (event) => {
       try {
         const text = event.target.result;
-        const linhas = text.split(/\r?\n/).filter(linha => App.css !== '' && linha.trim() !== '');
+        const linhas = text.split(/\r?\n/).filter(linha => linha.trim() !== '');
 
         if (linhas.length === 0) {
           setCarregandoAcao(false);
@@ -326,6 +334,7 @@ function App() {
         const idxDeposito = getIdx('deposito');
         const idxDescricao = getIdx('descricao');
         const idxOrdemVenda = getIdx('ordemvenda');
+        const idxCentro = getIdx('centro');
 
         if (idxLote === -1) {
           abrirAlerta('Erro', 'A coluna "Lote" é obrigatória e não foi encontrada no arquivo.');
@@ -339,6 +348,13 @@ function App() {
           if (colunas.length > idxLote) {
             const lote = colunas[idxLote];
             if (lote && lote !== '') {
+
+              // TRATAMENTO DE SEGURANÇA PARA A FILIAL
+              let filialLida = idxCentro !== -1 ? colunas[idxCentro] : null;
+              if (!filialLida || filialLida.trim() === '') {
+                filialLida = determinarFilial(lote);
+              }
+
               codigosExtraidos.push({
                 lote: lote,
                 material: idxMaterial !== -1 ? colunas[idxMaterial] : null,
@@ -350,7 +366,8 @@ function App() {
                 espessura: idxEspessura !== -1 ? colunas[idxEspessura] : null,
                 deposito: idxDeposito !== -1 ? colunas[idxDeposito] : null,
                 descricao: idxDescricao !== -1 ? colunas[idxDescricao] : null,
-                ordem_venda: idxOrdemVenda !== -1 ? colunas[idxOrdemVenda] : null
+                ordem_venda: idxOrdemVenda !== -1 ? colunas[idxOrdemVenda] : null,
+                filial: filialLida
               });
             }
           }
@@ -370,7 +387,8 @@ function App() {
           espessura: limparNumeroParaBanco(item.espessura),
           deposito: limparValorParaBanco(item.deposito),
           descricao: limparValorParaBanco(item.descricao),
-          ordem_venda: limparValorParaBanco(item.ordem_venda)
+          ordem_venda: limparValorParaBanco(item.ordem_venda),
+          filial: limparValorParaBanco(item.filial)
         }));
 
         const { error } = await supabase.from('bobinas_sap').insert(dadosParaBanco);
@@ -427,14 +445,23 @@ function App() {
           continue;
         }
 
+        const bobinaSAP = csvBobinas.find(c => c.lote === loteLimpo);
+        const filialMapeada = determinarFilial(loteLimpo) || (bobinaSAP ? bobinaSAP.filial : null);
+        const depositoEncontrado = bobinaSAP ? bobinaSAP.deposito : null;
+
         const { error } = await supabase
           .from('bobinas_lidas')
-          .insert([{ sessao_id: idSessaoAtiva, lote: loteLimpo, cracha_leitura: crachaLogado }]);
+          .insert([{
+            sessao_id: idSessaoAtiva,
+            lote: loteLimpo,
+            cracha_leitura: crachaLogado,
+            filial: filialMapeada,
+            deposito: depositoEncontrado
+          }]);
 
         if (error) throw error;
 
-        const constaSistema = csvBobinas.some(c => c.lote === loteLimpo);
-        if (constaSistema || csvBobinas.length === 0) {
+        if (bobinaSAP) {
           lotesSucessoSAP.push(loteLimpo);
         } else {
           avisos.push(`⚠️ Bobina ${loteLimpo} lida, mas NÃO está no SAP.`);
@@ -444,7 +471,9 @@ function App() {
           codigo: loteLimpo,
           dataHora: new Date().toLocaleString('pt-BR'),
           cracha: crachaLogado,
-          nome: nomeLogado
+          nome: nomeLogado,
+          filial: filialMapeada,
+          deposito: depositoEncontrado
         };
 
         listaAtualizada = [novaBobina, ...listaAtualizada];
@@ -501,9 +530,27 @@ function App() {
       for (const lote of lotesFormatados) {
         if (!lote || listaAtualizada.some(b => b.codigo === lote)) continue;
 
-        const novaBobina = { codigo: lote, dataHora: new Date().toLocaleString('pt-BR'), cracha: crachaLogado, nome: nomeLogado };
+        const bobinaSAP = csvBobinas.find(c => c.lote === lote);
+        const filialMapeada = determinarFilial(lote) || (bobinaSAP ? bobinaSAP.filial : null);
+        const depositoEncontrado = bobinaSAP ? bobinaSAP.deposito : null;
+
+        const novaBobina = {
+          codigo: lote,
+          dataHora: new Date().toLocaleString('pt-BR'),
+          cracha: crachaLogado,
+          nome: nomeLogado,
+          filial: filialMapeada,
+          deposito: depositoEncontrado
+        };
         listaAtualizada = [novaBobina, ...listaAtualizada];
-        insercoesNoBanco.push({ sessao_id: idSessaoAtiva, lote: lote, cracha_leitura: crachaLogado });
+
+        insercoesNoBanco.push({
+          sessao_id: idSessaoAtiva,
+          lote: lote,
+          cracha_leitura: crachaLogado,
+          filial: filialMapeada,
+          deposito: depositoEncontrado
+        });
       }
 
       if (insercoesNoBanco.length > 0) {
@@ -561,15 +608,18 @@ function App() {
       const bobinaSAP = csvBobinas.find(c => c.lote === b.codigo);
       const isOk = !!bobinaSAP;
 
+      const filialFinal = b.filial || (bobinaSAP ? bobinaSAP.filial : null) || determinarFilial(b.codigo) || '-';
+
       relatorio.push({
         codigo: b.codigo,
         status: csvBobinas.length === 0 ? 'Bipada (Sem SAP)' : (isOk ? 'OK (Lida)' : 'Não Consta no SAP'),
         dataHora: b.dataHora,
         cracha: b.cracha,
         nome_operador: b.nome,
+        filial: filialFinal,
+        deposito: b.deposito || (bobinaSAP ? (bobinaSAP.deposito || '-') : '-'),
         material: bobinaSAP ? bobinaSAP.material : '-',
         descricao: bobinaSAP ? bobinaSAP.descricao : '-',
-        deposito: bobinaSAP ? bobinaSAP.deposito : '-',
         peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-',
         largura: bobinaSAP ? bobinaSAP.largura : '-',
         espessura: bobinaSAP ? bobinaSAP.espessura : '-',
@@ -583,15 +633,19 @@ function App() {
 
     csvBobinas.forEach(c => {
       if (!lidasCodes.includes(c.lote)) {
+
+        const filialFinal = c.filial || determinarFilial(c.lote) || '-';
+
         relatorio.push({
           codigo: c.lote,
           status: 'Faltando (Não Bipada)',
           dataHora: '-',
           cracha: '-',
           nome_operador: '-',
+          filial: filialFinal,
+          deposito: c.deposito || '-',
           material: c.material || '-',
           descricao: c.descricao || '-',
-          deposito: c.deposito || '-',
           peso_liquido: c.peso_liquido || '-',
           largura: c.largura || '-',
           espessura: c.espessura || '-',
@@ -621,8 +675,8 @@ function App() {
       return str;
     };
 
-    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote;Material;Descricao;Deposito;Ordem Producao;Ordem Venda;Cliente;Nome Cliente;Peso Liquido;Largura;Espessura;Status;Data e Hora Leitura;Operador;Cracha\n"
-      + dados.map(e => `${limparParaCSV(e.codigo)};${limparParaCSV(e.material)};${limparParaCSV(e.descricao)};${limparParaCSV(e.deposito)};${limparParaCSV(e.ordem_producao)};${limparParaCSV(e.ordem_venda)};${limparParaCSV(e.cliente)};${limparParaCSV(e.nome_cliente)};${limparParaCSV(e.peso_liquido)};${limparParaCSV(e.largura)};${limparParaCSV(e.espessura)};${limparParaCSV(e.status)};${limparParaCSV(e.dataHora)};${limparParaCSV(e.nome_operador)};${limparParaCSV(e.cracha)}`).join("\n");
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote;Material;Descricao;Filial;Deposito;Ordem Producao;Ordem Venda;Cliente;Nome Cliente;Peso Liquido;Largura;Espessura;Status;Data e Hora Leitura;Operador;Cracha\n"
+      + dados.map(e => `${limparParaCSV(e.codigo)};${limparParaCSV(e.material)};${limparParaCSV(e.descricao)};${limparParaCSV(e.filial)};${limparParaCSV(e.deposito)};${limparParaCSV(e.ordem_producao)};${limparParaCSV(e.ordem_venda)};${limparParaCSV(e.cliente)};${limparParaCSV(e.nome_cliente)};${limparParaCSV(e.peso_liquido)};${limparParaCSV(e.largura)};${limparParaCSV(e.espessura)};${limparParaCSV(e.status)};${limparParaCSV(e.dataHora)};${limparParaCSV(e.nome_operador)};${limparParaCSV(e.cracha)}`).join("\n");
 
     const link = document.createElement("a");
     link.href = encodeURI(csvContent);
@@ -661,9 +715,9 @@ function App() {
 
         <div className="card shadow-lg border-0 p-4 p-md-5 w-100" style={{ maxWidth: '450px', borderRadius: '12px' }}>
           <div className="text-center mb-4 mb-md-5">
-            <img src={logoVideplast} alt="Videplast" className="img-fluid mb-4" style={{ maxHeight: '60px' }} />
-            <h4 className="fw-bold text-dark fs-5 fs-md-4">Inventário de Bobinas</h4>
-            <p className="text-muted small mb-0">Identifique-se para iniciar a contagem</p>
+            <img src={logoVideplast} alt="Videplast" className="img-fluid mb-4 logo-videplast-login" />
+            <h4 className="fw-bold text-dark fs-5 fs-md-4">Videplast</h4>
+            <p className="text-muted small mb-0">Controle de Estoque Videplast</p>
           </div>
 
           <div className="mb-4">
@@ -684,7 +738,7 @@ function App() {
             className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2"
             onClick={fazerLogin}
             disabled={carregandoLogin}
-            style={{ backgroundColor: '#d80404', border: 'none', fontSize: '1rem' }}
+            style={{ backgroundColor: '#c50000ff', border: 'none', fontSize: '1rem' }}
           >
             {carregandoLogin ? (
               <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
@@ -695,17 +749,19 @@ function App() {
     );
   }
 
-  // Se for admin, exibe o histórico global; se não for, exibe os lotes injetados com a info do CSV local
   let leiturasProcessadas = isAdmin
     ? leiturasGlobais
     : bobinasLidas.map(b => {
       const bSap = csvBobinas.find(c => c.lote === b.codigo);
+      const filialFinal = b.filial || (bSap ? bSap.filial : null) || determinarFilial(b.codigo) || '-';
+
       return {
         ...b,
         codigo: b.codigo,
+        filial: filialFinal,
+        deposito: b.deposito || (bSap ? (bSap.deposito || '-') : '-'),
         material: bSap ? (bSap.material || '-') : '-',
         descricao: bSap ? (bSap.descricao || '-') : '-',
-        deposito: bSap ? (bSap.deposito || '-') : '-',
         peso_liquido: bSap ? (bSap.peso_liquido || '-') : '-',
         largura: bSap ? (bSap.largura || '-') : '-',
         espessura: bSap ? (bSap.espessura || '-') : '-',
@@ -721,24 +777,53 @@ function App() {
       b.codigo.toLowerCase().includes(conferenciaFilters.lote.toLowerCase())
     );
   }
+
   if (conferenciaFilters.data_leitura) {
     leiturasProcessadas = leiturasProcessadas.filter(b =>
       b.dataHora.includes(conferenciaFilters.data_leitura)
     );
   }
 
+  if (conferenciaFilters.filial) {
+    leiturasProcessadas = leiturasProcessadas.filter(b =>
+      String(b.filial) === conferenciaFilters.filial
+    );
+  }
+
+  if (conferenciaFilters.deposito) {
+    leiturasProcessadas = leiturasProcessadas.filter(b =>
+      String(b.deposito).toUpperCase().includes(conferenciaFilters.deposito.toUpperCase())
+    );
+  }
+
+  // ==========================================
+  // LÓGICA DE ORDENAÇÃO
+  // ==========================================
   leiturasProcessadas.sort((a, b) => {
-    let valA = a.dataHora;
-    let valB = b.dataHora;
-
     if (conferenciaSort.field === 'Lote') {
-      valA = a.codigo;
-      valB = b.codigo;
-    }
+      const valA = a.codigo || '';
+      const valB = b.codigo || '';
+      if (valA < valB) return conferenciaSort.order === 'asc' ? -1 : 1;
+      if (valA > valB) return conferenciaSort.order === 'asc' ? 1 : -1;
+      return 0;
+    } else {
+      const converterParaData = (dataStr) => {
+        if (!dataStr || dataStr === '-') return 0;
+        const partes = dataStr.match(/\d+/g);
+        if (partes && partes.length >= 3) {
+          const [dia, mes, ano, hora, min, sec] = partes;
+          return new Date(ano, mes - 1, dia, hora || 0, min || 0, sec || 0).getTime();
+        }
+        return 0;
+      };
 
-    if (valA < valB) return conferenciaSort.order === 'asc' ? -1 : 1;
-    if (valA > valB) return conferenciaSort.order === 'asc' ? 1 : -1;
-    return 0;
+      const tempoA = converterParaData(a.dataHora);
+      const tempoB = converterParaData(b.dataHora);
+
+      if (tempoA < tempoB) return conferenciaSort.order === 'asc' ? -1 : 1;
+      if (tempoA > tempoB) return conferenciaSort.order === 'asc' ? 1 : -1;
+      return 0;
+    }
   });
 
   return (
@@ -770,7 +855,7 @@ function App() {
         </div>
       )}
 
-      {/* MODAL DE CONFERÊNCIA (HISTÓRICO EXPANSÍVEL COM DETALHES DO SAP) */}
+      {/* MODAL DE CONFERÊNCIA (HISTÓRICO EXPANSÍVEL COM NOVOS FILTROS DE FILIAL E DEPÓSITO) */}
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
@@ -785,14 +870,44 @@ function App() {
                 <p className="mb-2 text-center">
                   Operador responsável: <strong className="text-danger">{crachaLogado}</strong>
                 </p>
+
                 <FilterControls
                   filters={conferenciaFilters}
                   onFilterChange={setConferenciaFilters}
-                  onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '' })}
+                  onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '' })}
                   sortConfig={conferenciaSort}
                   onSortChange={setConferenciaSort}
                   itemsCount={leiturasProcessadas.length}
                 />
+
+                <div className="row g-2 mb-3 mt-1">
+                  <div className="col-12 col-sm-6">
+                    <label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Filial</label>
+                    <select
+                      className="form-select form-select-sm"
+                      value={conferenciaFilters.filial}
+                      onChange={e => setConferenciaFilters(prev => ({ ...prev, filial: e.target.value }))}
+                    >
+                      <option value="">Todas as Filiais</option>
+                      <option value="1001">1001 (VA)</option>
+                      <option value="1003">1003 (MA)</option>
+                      <option value="1005">1005 (RA)</option>
+                    </select>
+                  </div>
+                  <div className="col-12 col-sm-6">
+                    <label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Depósito</label>
+                    <select
+                      className="form-select form-select-sm"
+                      value={conferenciaFilters.deposito}
+                      onChange={e => setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }))}
+                    >
+                      <option value="">Todos os Depósitos</option>
+                      <option value="P004">P004</option>
+                      <option value="P030">P030</option>
+                      <option value="P040">P040</option>
+                    </select>
+                  </div>
+                </div>
 
                 <div className="table-responsive border rounded" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   <table className="table table-hover text-center align-middle mb-0">
@@ -836,6 +951,9 @@ function App() {
                                           <strong>Depósito:</strong> {leitura.deposito}
                                         </div>
                                         <div className="col-6 col-md-3">
+                                          <strong>Filial:</strong> {leitura.filial}
+                                        </div>
+                                        <div className="col-6 col-md-4">
                                           <strong>Peso Líquido:</strong> {leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}
                                         </div>
                                         <div className="col-6 col-md-4">
@@ -844,7 +962,7 @@ function App() {
                                         <div className="col-6 col-md-4">
                                           <strong>OP / OV:</strong> OP: {leitura.ordem_producao} / OV: {leitura.ordem_venda}
                                         </div>
-                                        <div className="col-12 col-md-4">
+                                        <div className="col-12">
                                           <strong>Cliente:</strong> {leitura.cliente} - {leitura.nome_cliente}
                                         </div>
                                       </div>
@@ -962,9 +1080,9 @@ function App() {
                 <button className="vp-btn vp-btn-dark flex-grow-1" onClick={() => setUsandoCamera(true)} disabled={carregandoAcao}>
                   <i className="bi bi-camera"></i> Câmera Celular
                 </button>
-                {/* <button className="vp-btn vp-btn-outline flex-grow-1" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)' }} onClick={() => setUsandoDrone(true)} disabled={carregandoAcao}>
+                <button className="vp-btn vp-btn-outline flex-grow-1" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)' }} onClick={() => setUsandoDrone(true)} disabled={carregandoAcao}>
                   <i className="bi bi-send-check"></i> Processar Drone
-                </button> */}
+                </button>
               </div>
             </div>
           )}
@@ -1070,34 +1188,42 @@ function App() {
                                       </div>
                                       <div className="col-6 col-md-3">
                                         <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Peso Líquido</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.peso_liquido ? `${item.peso_liquido} kg` : '-'}</div>
+                                          <span className="vp-detail-label">Filial</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.filial || '-'}</div>
                                         </div>
                                       </div>
-                                      <div className="col-6 col-md-3">
+                                      <div className="col-6 col-md-4">
+                                        <div className="vp-detail-block">
+                                          <span className="vp-detail-label">Peso Líquido</span>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</div>
+                                        </div>
+                                      </div>
+                                      <div className="col-6 col-md-4">
                                         <div className="vp-detail-block">
                                           <span className="vp-detail-label">Largura x Espessura</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.largura && item.espessura ? `${item.largura} mm x ${item.espessura} µm` : '-'}</div>
+                                          <div className="vp-detail-val fw-semibold text-dark">{item.largura !== '-' && item.espessura !== '-' ? `${item.largura} mm x ${item.espessura} µm` : '-'}</div>
                                         </div>
                                       </div>
-                                      <div className="col-6 col-md-3">
+                                      <div className="col-6 col-md-4">
                                         <div className="vp-detail-block">
                                           <span className="vp-detail-label">Ordem Produção / Venda</span>
                                           <div className="vp-detail-val fw-semibold text-dark">OP: {item.ordem_producao || '-'} / OV: {item.ordem_venda || '-'}</div>
                                         </div>
                                       </div>
-                                      <div className="col-12 col-md-6">
+                                      <div className="col-12">
                                         <div className="vp-detail-block">
                                           <span className="vp-detail-label">Cliente</span>
                                           <div className="vp-detail-val fw-semibold text-dark">{item.cliente || '-'} - {item.nome_cliente || '-'}</div>
                                         </div>
                                       </div>
-                                      <div className="col-12 border-top pt-2 mt-2">
-                                        <small className="text-muted">
-                                          <i className="bi bi-clock me-1"></i>
-                                          {item.dataHora !== '-' ? `Bipada em ${item.dataHora} por ${item.nome_operador} (${item.cracha})` : 'Aguardando bipagem.'}
-                                        </small>
-                                      </div>
+                                      {item.tipo !== 'faltando' && (
+                                        <div className="col-12 border-top pt-2 mt-2">
+                                          <small className="text-muted">
+                                            <i className="bi bi-clock me-1"></i>
+                                            {item.dataHora !== '-' ? `Bipada em ${item.dataHora} por ${item.nome_operador} (${item.cracha})` : 'Aguardando bipagem.'}
+                                          </small>
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                 </td>
@@ -1152,14 +1278,18 @@ function App() {
                         </div>
 
                         <div className="vp-mobile-card-details">
-                          <div className="vp-detail-item">
-                            <span className="vp-detail-label">Data/Hora:</span>
-                            <span className="vp-detail-value">{item.dataHora || '-'}</span>
-                          </div>
-                          <div className="vp-detail-item">
-                            <span className="vp-detail-label">Operador:</span>
-                            <span className="vp-detail-value">{item.nome_operador || '-'}</span>
-                          </div>
+                          {item.tipo !== 'faltando' && (
+                            <>
+                              <div className="vp-detail-item">
+                                <span className="vp-detail-label">Data/Hora:</span>
+                                <span className="vp-detail-value">{item.dataHora || '-'}</span>
+                              </div>
+                              <div className="vp-detail-item">
+                                <span className="vp-detail-label">Operador:</span>
+                                <span className="vp-detail-value">{item.nome_operador || '-'}</span>
+                              </div>
+                            </>
+                          )}
                         </div>
 
                         {expandido && (
@@ -1177,17 +1307,23 @@ function App() {
                               </div>
                               <div className="col-6">
                                 <div className="vp-detail-block">
+                                  <span className="vp-detail-label">Filial</span>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.filial || '-'}</div>
+                                </div>
+                              </div>
+                              <div className="col-6">
+                                <div className="vp-detail-block">
                                   <span className="vp-detail-label">Peso Líquido</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.peso_liquido ? `${item.peso_liquido} kg` : '-'}</div>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</div>
                                 </div>
                               </div>
                               <div className="col-6">
                                 <div className="vp-detail-block">
                                   <span className="vp-detail-label">Dimensões</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.largura && item.espessura ? `${item.largura}mm x ${item.espessura}µm` : '-'}</div>
+                                  <div className="vp-detail-val small fw-semibold text-dark">{item.largura !== '-' && item.espessura !== '-' ? `${item.largura}mm x ${item.espessura}µm` : '-'}</div>
                                 </div>
                               </div>
-                              <div className="col-6">
+                              <div className="col-12">
                                 <div className="vp-detail-block">
                                   <span className="vp-detail-label">OP / OV</span>
                                   <div className="vp-detail-val small fw-semibold text-dark">{item.ordem_producao || '-'} / {item.ordem_venda || '-'}</div>
