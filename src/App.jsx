@@ -747,7 +747,7 @@ function App() {
             className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2"
             onClick={fazerLogin}
             disabled={carregandoLogin}
-            style={{ backgroundColor: '#198754', border: 'none', fontSize: '1rem' }}
+            style={{ backgroundColor: '#cf0808ff', border: 'none', fontSize: '1rem' }}
           >
             {carregandoLogin ? (
               <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
