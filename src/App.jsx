@@ -34,9 +34,12 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('usuario_is_admin') === 'true');
   const [leiturasGlobais, setLeiturasGlobais] = useState([]);
 
-  // ESTADOS DO FILTRO DA CONFERÊNCIA
+  // ESTADOS DO FILTRO E PAGINAÇÃO DA CONFERÊNCIA
   const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '' });
   const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
+  const [paginaAtual, setPaginaAtual] = useState(1);
+  const ITENS_POR_PAGINA = 50; // Limite de itens por página para não travar o celular
+
   const [usandoDrone, setUsandoDrone] = useState(false);
 
   // ESTADOS DO INVENTÁRIO 
@@ -97,6 +100,13 @@ function App() {
       inputRef.current.focus();
     }
   }, [crachaLogado, modal.show, showConferencia, usandoCamera]);
+
+  // EFEITO DE PAGINAÇÃO: Volta para a página 1 se o usuário digitar algo na busca
+  useEffect(() => {
+    setPaginaAtual(1);
+    setLotesExpandidos({}); // Fecha as abas ao mudar de página ou filtro
+  }, [conferenciaFilters, conferenciaSort]);
+
 
   // FUNÇÕES DE MODAL
   const fecharModal = () => setModal({ ...modal, show: false });
@@ -201,6 +211,7 @@ function App() {
 
   const abrirConferenciaAdmin = async () => {
     setShowConferencia(true);
+    setPaginaAtual(1); // Garante que abre na primeira página
 
     setCarregandoAcao(true);
     try {
@@ -736,7 +747,7 @@ function App() {
             className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2"
             onClick={fazerLogin}
             disabled={carregandoLogin}
-            style={{ backgroundColor: '#d30909ff', border: 'none', fontSize: '1rem' }}
+            style={{ backgroundColor: '#198754', border: 'none', fontSize: '1rem' }}
           >
             {carregandoLogin ? (
               <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
@@ -747,6 +758,7 @@ function App() {
     );
   }
 
+  // PROCESSAMENTO DE DADOS E FILTRAGEM
   let leiturasProcessadas = isAdmin
     ? leiturasGlobais
     : bobinasLidas.map(b => {
@@ -794,6 +806,7 @@ function App() {
     );
   }
 
+  // LÓGICA DE ORDENAÇÃO
   leiturasProcessadas.sort((a, b) => {
     if (conferenciaSort.field === 'Lote') {
       const valA = a.codigo || '';
@@ -820,6 +833,20 @@ function App() {
       return 0;
     }
   });
+
+  // ==========================================
+  // LÓGICA DE PAGINAÇÃO (LIMITADOR DE CARGA DOM)
+  // ==========================================
+  const totalPaginas = Math.ceil(leiturasProcessadas.length / ITENS_POR_PAGINA) || 1;
+
+  // Impede que a página atual seja maior que o total de páginas (ocorre quando filtramos e a lista diminui)
+  const paginaCorrigida = Math.min(paginaAtual, totalPaginas);
+
+  const indexUltimoItem = paginaCorrigida * ITENS_POR_PAGINA;
+  const indexPrimeiroItem = indexUltimoItem - ITENS_POR_PAGINA;
+
+  // Corta o array para exibir apenas os 50 itens da página atual
+  const leiturasPaginadas = leiturasProcessadas.slice(indexPrimeiroItem, indexUltimoItem);
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-center position-relative pb-5">
@@ -850,7 +877,7 @@ function App() {
         </div>
       )}
 
-      {/* MODAL DE CONFERÊNCIA (HISTÓRICO EXPANSÍVEL COM RESPONSIVIDADE) */}
+      {/* MODAL DE CONFERÊNCIA COM PAGINAÇÃO */}
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
@@ -864,6 +891,8 @@ function App() {
               <div className="modal-body p-4 fs-6 text-secondary">
                 <p className="mb-2 text-center">
                   Operador responsável: <strong className="text-danger">{crachaLogado}</strong>
+                  <br />
+                  <span className="small text-muted">Exibindo {leiturasProcessadas.length} resultados encontrados.</span>
                 </p>
 
                 <FilterControls
@@ -904,7 +933,7 @@ function App() {
                   </div>
                 </div>
 
-                {/* VISTA DE COMPUTADOR: Tabela Clássica */}
+                {/* VISTA DE COMPUTADOR: Tabela Clássica com Paginação */}
                 <div className="table-responsive border rounded d-none d-md-block" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   <table className="table table-hover text-center align-middle mb-0">
                     <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}>
@@ -915,14 +944,14 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {leiturasProcessadas.length === 0 ? (
+                      {leiturasPaginadas.length === 0 ? (
                         <tr>
                           <td colSpan={isAdmin ? 3 : 2} className="text-muted py-4">
                             Nenhuma leitura encontrada com esses filtros.
                           </td>
                         </tr>
                       ) : (
-                        leiturasProcessadas.map((leitura, index) => {
+                        leiturasPaginadas.map((leitura, index) => {
                           const confKey = `${leitura.codigo}_conf_${index}`;
                           const expandido = lotesExpandidos[confKey];
                           return (
@@ -974,13 +1003,13 @@ function App() {
                   </table>
                 </div>
 
-                {/* VISTA DE TELEMÓVEL: Cartões Responsivos */}
+                {/* VISTA DE TELEMÓVEL: Cartões Responsivos com Paginação */}
                 <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
                   <div className="vp-mobile-cards-list">
-                    {leiturasProcessadas.length === 0 ? (
+                    {leiturasPaginadas.length === 0 ? (
                       <div className="text-center text-muted py-4">Nenhuma leitura encontrada com esses filtros.</div>
                     ) : (
-                      leiturasProcessadas.map((leitura, index) => {
+                      leiturasPaginadas.map((leitura, index) => {
                         const confKey = `${leitura.codigo}_conf_${index}`;
                         const expandido = lotesExpandidos[confKey];
                         return (
@@ -1056,6 +1085,29 @@ function App() {
                   </div>
                 </div>
 
+                {/* CONTROLOS DE PAGINAÇÃO (Aparecem apenas se houver mais de uma página) */}
+                {totalPaginas > 1 && (
+                  <div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top">
+                    <button
+                      className="btn btn-outline-secondary btn-sm px-3"
+                      onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))}
+                      disabled={paginaAtual === 1}
+                    >
+                      <i className="bi bi-chevron-left me-1"></i> Anterior
+                    </button>
+                    <span className="small text-muted fw-semibold">
+                      Página {paginaCorrigida} de {totalPaginas}
+                    </span>
+                    <button
+                      className="btn btn-outline-secondary btn-sm px-3"
+                      onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))}
+                      disabled={paginaAtual === totalPaginas}
+                    >
+                      Próxima <i className="bi bi-chevron-right ms-1"></i>
+                    </button>
+                  </div>
+                )}
+
               </div>
               <div className="modal-footer border-0 justify-content-center pb-4">
                 <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto" onClick={() => setShowConferencia(false)}>
@@ -1125,7 +1177,6 @@ function App() {
             <Scanner aoLerCodigo={adicionarBobina} aoCancelar={() => setUsandoCamera(false)} />
           ) : (
             <div className="vp-card no-hover mb-4" style={{ margin: 0 }}>
-              <span className="vp-micro-label">Leitura Ativa</span>
               <h2 className="vp-title">Bipar Bobina</h2>
               <p className="vp-subtitle" style={{ marginBottom: '1.25rem' }}>Utilize o leitor conectado, a câmera do celular ou processe em lote via drone.</p>
 
@@ -1133,7 +1184,7 @@ function App() {
                 <textarea
                   ref={inputRef}
                   className="vp-input"
-                  placeholder="Bipe ou digite os códigos (espaço, vírgula ou Enter)"
+                  placeholder="Bipe ou digite os códigos (espaço, vírgula ou Enter)..."
                   value={codigo}
                   onChange={(e) => setCodigo(e.target.value)}
                   onKeyDown={(e) => {
