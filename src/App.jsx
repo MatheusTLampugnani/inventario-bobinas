@@ -25,6 +25,25 @@ const determinarFilial = (lote) => {
   return null;
 };
 
+const extrairLotesDoTexto = (textoLido) => {
+  if (!textoLido) return [];
+  const textoLimpo = textoLido.toUpperCase().replace(/[\r\n\t]+/g, ' ');
+
+  let trechoValido = textoLimpo;
+
+  const indexInicio = textoLimpo.indexOf('VL2LT');
+  if (indexInicio !== -1) {
+    const indexFim = textoLimpo.indexOf('KG', indexInicio);
+    if (indexFim !== -1) {
+      trechoValido = textoLimpo.substring(indexInicio + 5, indexFim);
+    } else {
+      trechoValido = textoLimpo.substring(indexInicio + 5);
+    }
+  }
+  const regexValidos = /(RA|MA|VA)\d+/g;
+  return trechoValido.match(regexValidos) || [];
+};
+
 function App() {
   // ESTADOS DE LOGIN
   const [crachaLogado, setCrachaLogado] = useState(() => sessionStorage.getItem('usuario_cracha') || '');
@@ -38,7 +57,7 @@ function App() {
   const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '' });
   const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
   const [paginaAtual, setPaginaAtual] = useState(1);
-  const ITENS_POR_PAGINA = 50; // Limite de itens por página para não travar o celular
+  const ITENS_POR_PAGINA = 50;
 
   const [usandoDrone, setUsandoDrone] = useState(false);
 
@@ -101,12 +120,10 @@ function App() {
     }
   }, [crachaLogado, modal.show, showConferencia, usandoCamera]);
 
-  // EFEITO DE PAGINAÇÃO: Volta para a página 1 se o usuário digitar algo na busca
   useEffect(() => {
     setPaginaAtual(1);
-    setLotesExpandidos({}); // Fecha as abas ao mudar de página ou filtro
+    setLotesExpandidos({});
   }, [conferenciaFilters, conferenciaSort]);
-
 
   // FUNÇÕES DE MODAL
   const fecharModal = () => setModal({ ...modal, show: false });
@@ -211,7 +228,7 @@ function App() {
 
   const abrirConferenciaAdmin = async () => {
     setShowConferencia(true);
-    setPaginaAtual(1); // Garante que abre na primeira página
+    setPaginaAtual(1);
 
     setCarregandoAcao(true);
     try {
@@ -424,14 +441,11 @@ function App() {
     const textoLido = (typeof codigoCopia === 'string' ? codigoCopia : codigo).trim();
     if (!textoLido) return;
 
-    const textoLimpo = textoLido.toUpperCase().replace(/[\r\n\t]+/g, ' ');
-    const regexValidos = /(RA|MA|VA)\d+/g;
-    let lotesExtraidos = textoLimpo.match(regexValidos) || [];
-
+    let lotesExtraidos = extrairLotesDoTexto(textoLido);
     lotesExtraidos = [...new Set(lotesExtraidos)];
 
     if (lotesExtraidos.length === 0) {
-      abrirAlerta('Atenção', 'Não foi possível encontrar códigos válidos (RA, MA, VA) nesta leitura.');
+      abrirAlerta('Atenção', 'Não foi possível encontrar códigos válidos (RA, MA, VA) após a marcação VL2LT.');
       setCodigo('');
       return;
     }
@@ -520,16 +534,19 @@ function App() {
     let lotesFormatados = [];
 
     arrayDeTextosLidos.forEach(texto => {
-      const textoLimpo = texto.toUpperCase().replace(/[\r\n\t]+/g, ' ');
-      const regexValidos = /(RA|MA|VA)\d+/g;
-
-      const matches = textoLimpo.match(regexValidos);
-      if (matches) {
+      const matches = extrairLotesDoTexto(texto);
+      if (matches.length > 0) {
         lotesFormatados.push(...matches);
       }
     });
 
     lotesFormatados = [...new Set(lotesFormatados)];
+
+    if (lotesFormatados.length === 0) {
+      setCarregandoAcao(false);
+      abrirAlerta('Atenção', 'Não foram encontrados códigos válidos após a marcação VL2LT no vídeo.');
+      return;
+    }
 
     try {
       const idSessaoAtiva = await garantirSessao();
@@ -747,7 +764,7 @@ function App() {
             className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2"
             onClick={fazerLogin}
             disabled={carregandoLogin}
-            style={{ backgroundColor: '#cf0808ff', border: 'none', fontSize: '1rem' }}
+            style={{ backgroundColor: '#e20909ff', border: 'none', fontSize: '1rem' }}
           >
             {carregandoLogin ? (
               <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
@@ -834,18 +851,11 @@ function App() {
     }
   });
 
-  // ==========================================
-  // LÓGICA DE PAGINAÇÃO (LIMITADOR DE CARGA DOM)
-  // ==========================================
+  // LÓGICA DE PAGINAÇÃO
   const totalPaginas = Math.ceil(leiturasProcessadas.length / ITENS_POR_PAGINA) || 1;
-
-  // Impede que a página atual seja maior que o total de páginas (ocorre quando filtramos e a lista diminui)
   const paginaCorrigida = Math.min(paginaAtual, totalPaginas);
-
   const indexUltimoItem = paginaCorrigida * ITENS_POR_PAGINA;
   const indexPrimeiroItem = indexUltimoItem - ITENS_POR_PAGINA;
-
-  // Corta o array para exibir apenas os 50 itens da página atual
   const leiturasPaginadas = leiturasProcessadas.slice(indexPrimeiroItem, indexUltimoItem);
 
   return (
@@ -877,7 +887,7 @@ function App() {
         </div>
       )}
 
-      {/* MODAL DE CONFERÊNCIA COM PAGINAÇÃO */}
+      {/* MODAL DE CONFERÊNCIA */}
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
@@ -933,7 +943,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* VISTA DE COMPUTADOR: Tabela Clássica com Paginação */}
                 <div className="table-responsive border rounded d-none d-md-block" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   <table className="table table-hover text-center align-middle mb-0">
                     <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}>
@@ -1003,7 +1012,6 @@ function App() {
                   </table>
                 </div>
 
-                {/* VISTA DE TELEMÓVEL: Cartões Responsivos com Paginação */}
                 <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
                   <div className="vp-mobile-cards-list">
                     {leiturasPaginadas.length === 0 ? (
@@ -1085,7 +1093,7 @@ function App() {
                   </div>
                 </div>
 
-                {/* CONTROLOS DE PAGINAÇÃO (Aparecem apenas se houver mais de uma página) */}
+                {/* CONTROLOS DE PAGINAÇÃO */}
                 {totalPaginas > 1 && (
                   <div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top">
                     <button
@@ -1177,6 +1185,7 @@ function App() {
             <Scanner aoLerCodigo={adicionarBobina} aoCancelar={() => setUsandoCamera(false)} />
           ) : (
             <div className="vp-card no-hover mb-4" style={{ margin: 0 }}>
+              <span className="vp-micro-label">Leitura Ativa</span>
               <h2 className="vp-title">Bipar Bobina</h2>
               <p className="vp-subtitle" style={{ marginBottom: '1.25rem' }}>Utilize o leitor conectado, a câmera do celular ou processe em lote via drone.</p>
 
