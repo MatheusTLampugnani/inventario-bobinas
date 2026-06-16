@@ -8,52 +8,63 @@ const Scanner = ({ aoLerCodigo, aoCancelar }) => {
     scannerRef.current = new Html5Qrcode("leitor-camera");
 
     const iniciarCamera = async () => {
+      const configuracaoCamera = {
+        fps: 15,
+        videoConstraints: {
+          width: { min: 1280, ideal: 1920 },
+          height: { min: 720, ideal: 1080 },
+          focusMode: "continuous"
+        },
+        qrbox: (videoWidth, videoHeight) => {
+          const minDimension = Math.min(videoWidth, videoHeight);
+          return {
+            width: Math.floor(minDimension * 0.7),
+            height: Math.floor(minDimension * 0.7)
+          };
+        }
+      };
+
       try {
         await scannerRef.current.start(
-          { facingMode: "environment" },
-          {
-            fps: 30, // Aumentado para 30 frames por segundo (mais agilidade)
-
-            // Força alta resolução (HD/Full HD) e foco contínuo para ler códigos densos e distantes
-            videoConstraints: {
-              width: { min: 1280, ideal: 1920 },
-              height: { min: 720, ideal: 1080 },
-              focusMode: "continuous"
-            },
-
-            // Caixa de leitura dinâmica: ocupa 70% da tela independentemente do celular
-            qrbox: (videoWidth, videoHeight) => {
-              const minDimension = Math.min(videoWidth, videoHeight);
-              return {
-                width: Math.floor(minDimension * 0.7),
-                height: Math.floor(minDimension * 0.7)
-              };
-            }
-          },
+          { facingMode: { exact: "environment" } },
+          configuracaoCamera,
           (textoDecodificado) => {
             if (scannerRef.current && scannerRef.current.getState() === 2 /* SCANNING */) {
-              // Pausa o leitor imediatamente para não bipar duas vezes o mesmo código
               scannerRef.current.pause();
-
-              // Executa o fechamento do scanner com segurança
               scannerRef.current.stop().then(() => {
                 aoLerCodigo(textoDecodificado);
               }).catch(console.error);
             }
           },
           (erro) => {
-            // Ignorar falhas de frame vazio silenciosamente para não poluir o console
           }
         );
       } catch (err) {
-        console.error("Erro ao acessar à câmara: ", err);
+        console.warn("A câmara traseira 'exata' falhou. A tentar de forma normal...", err);
+
+        try {
+          await scannerRef.current.start(
+            { facingMode: "environment" },
+            configuracaoCamera,
+            (textoDecodificado) => {
+              if (scannerRef.current && scannerRef.current.getState() === 2 /* SCANNING */) {
+                scannerRef.current.pause();
+                scannerRef.current.stop().then(() => {
+                  aoLerCodigo(textoDecodificado);
+                }).catch(console.error);
+              }
+            },
+            (erro) => { }
+          );
+        } catch (errFallback) {
+          console.error("Erro total ao acessar a câmara: ", errFallback);
+        }
       }
     };
 
     iniciarCamera();
 
     return () => {
-      // Limpeza segura ao desmontar o componente
       if (scannerRef.current && scannerRef.current.isScanning) {
         scannerRef.current.stop().catch(console.error);
       }
