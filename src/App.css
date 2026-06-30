@@ -1,47 +1,57 @@
+/* =========================================================
+   DESIGN SYSTEM - VIDEPLAST
+   1. VARIÁVEIS GLOBAIS E PALETA DE CORES
+========================================================= */
 :root {
-  /* Paleta Oficial da Videplast (extraída do site oficial) */
-  --vp-bg: #f5f5f5;
-  --vp-surface: #ffffff;
-  --vp-surface-alt: #fafafa;
-  --vp-topbar: #1a1a1a;
+  /* Paleta Oficial Videplast */
+  --vp-primary: #e20909;
+  --vp-primary-hover: #b80505;
+  --vp-dark: #1e293b;
+  --vp-gray: #6c757d;
 
-  --vp-text: #1a1a1a;
-  --vp-text-muted: #7b7876;
+  /* Fundos e Superfícies */
+  --vp-bg: #f4f6f8;
+  --vp-surface: #ffffff;
+  --vp-surface-alt: #f8f9fa;
   --vp-border: #e8e8e8;
 
-  --vp-red: #d51920;
-  --vp-red-hover: #a81318;
-  --vp-green: #10b981;
-  --vp-orange: #ffa800;
+  /* Textos */
+  --vp-text: #1a1a1a;
+  --vp-text-muted: #7b7876;
 
-  /* Tipografia Dupla */
+  /* Cores de Feedback (Status) */
+  --vp-success: #10b981;
+  --vp-warning: #ffa800;
+  --vp-danger: #d51920;
+
+  /* Tipografia */
   --vp-mono: 'DM Mono', monospace;
   --vp-sans: 'DM Sans', sans-serif;
+
+  /* Formas e Sombras Premium */
+  --vp-radius-sm: 8px;
+  --vp-radius-md: 12px;
+  --vp-radius-lg: 16px;
+  --vp-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.05);
+  --vp-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --vp-shadow-hover: 0 8px 24px rgba(226, 9, 9, 0.15);
 }
 
 /* =========================================
-   RESET GLOBAL
-   ========================================= */
+   2. RESET GLOBAL & BASE
+========================================= */
 * {
   box-sizing: border-box;
 }
 
 html,
-body {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  overflow-x: hidden;
-  height: 100%;
-}
-
+body,
 #root {
-  width: 100%;
-  max-width: none;
   margin: 0;
   padding: 0;
-  text-align: left;
+  width: 100%;
   height: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -50,7 +60,7 @@ body {
   font-family: var(--vp-sans);
 }
 
-/* Remove as setas feias dos inputs de número no login */
+/* Remove setas feias dos inputs numéricos */
 input[type=number]::-webkit-inner-spin-button,
 input[type=number]::-webkit-outer-spin-button {
   -webkit-appearance: none;
@@ -62,45 +72,8 @@ input[type=number] {
 }
 
 /* =========================================
-   TOPBAR & NAVEGAÇÃO
-   ========================================= */
-.vp-topbar {
-  background: var(--vp-topbar);
-  color: white;
-  padding: 0.75rem 2rem;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.vp-topbar-brand {
-  font-weight: 700;
-  font-size: 1.1rem;
-  letter-spacing: 1px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.vp-topbar-brand img {
-  height: 28px;
-}
-
-.vp-user-chip {
-  background: rgba(255, 255, 255, 0.1);
-  padding: 0.4rem 0.8rem;
-  border-radius: 20px;
-  font-size: 0.85rem;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-/* =========================================
-   TIPOGRAFIA & MICRO-LABELS
-   ========================================= */
+   3. TIPOGRAFIA & CABEÇALHOS
+========================================= */
 .vp-mono {
   font-family: var(--vp-mono);
 }
@@ -128,313 +101,7 @@ input[type=number] {
   margin: 0;
 }
 
-/* =========================================
-   CARDS & CONTAINERS
-   ========================================= */
-.vp-container {
-  max-width: 900px;
-  margin: 2rem auto;
-  padding: 0 1rem;
-}
-
-.vp-card {
-  background: var(--vp-surface);
-  border: 1px solid var(--vp-border);
-  border-radius: 8px;
-  padding: 1.5rem;
-  margin-bottom: 1.5rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
-}
-
-.vp-action-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1.5rem;
-  margin-bottom: 1.5rem;
-}
-
-/* =========================================
-   CONTADORES (COUNTERS)
-   ========================================= */
-.vp-counters-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-
-.vp-counter {
-  background: var(--vp-surface);
-  padding: 1.5rem;
-  border-radius: 8px;
-  border: 1px solid var(--vp-border);
-  text-align: center;
-}
-
-.vp-counter-val {
-  font-size: 2.8rem;
-  font-weight: 300;
-  font-family: var(--vp-sans);
-  line-height: 1;
-  margin-top: 0.5rem;
-}
-
-.vp-counter.esperadas {
-  border-bottom: 4px solid var(--vp-text-muted);
-}
-
-.vp-counter.esperadas .vp-counter-val {
-  color: var(--vp-text);
-}
-
-.vp-counter.lidas {
-  border-bottom: 4px solid var(--vp-green);
-}
-
-.vp-counter.lidas .vp-counter-val {
-  color: var(--vp-green);
-}
-
-.vp-counter.faltam {
-  border-bottom: 4px solid var(--vp-red);
-}
-
-.vp-counter.faltam .vp-counter-val {
-  color: var(--vp-red);
-}
-
-/* =========================================
-   BOTÕES & INPUTS
-   ========================================= */
-.vp-btn,
-select.vp-input,
-input.vp-input {
-  height: 44px;
-  box-sizing: border-box;
-}
-
-.vp-btn {
-  font-family: var(--vp-sans);
-  font-weight: 600;
-  font-size: 0.9rem;
-  border-radius: 6px;
-  padding: 0 1.25rem;
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  white-space: nowrap;
-}
-
-.vp-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.vp-btn-primary {
-  background: var(--vp-red);
-  color: white;
-}
-
-.vp-btn-primary:hover:not(:disabled) {
-  background: var(--vp-red-hover);
-}
-
-.vp-btn-dark {
-  background: var(--vp-topbar);
-  color: white;
-}
-
-.vp-btn-dark:hover:not(:disabled) {
-  background: #2c3138;
-}
-
-.vp-btn-outline {
-  background: transparent;
-  border-color: var(--vp-border);
-  color: var(--vp-text);
-}
-
-.vp-btn-outline:hover:not(:disabled) {
-  background: var(--vp-surface-alt);
-}
-
-.vp-btn-ghost-danger {
-  background: transparent;
-  color: var(--vp-red);
-  padding: 0.4rem;
-  height: auto;
-}
-
-.vp-btn-ghost-danger:hover:not(:disabled) {
-  background: #fef2f2;
-  border-radius: 4px;
-}
-
-.vp-input {
-  font-family: var(--vp-mono);
-  border: 1px solid var(--vp-border);
-  border-radius: 6px;
-  padding: 0 1rem;
-  font-size: 15px;
-  width: 100%;
-  outline: none;
-  background: var(--vp-surface-alt);
-  transition: border-color 0.2s, background 0.2s;
-}
-
-.vp-input:focus {
-  border-color: var(--vp-red);
-  background: var(--vp-surface);
-  box-shadow: 0 0 0 3px rgba(216, 4, 4, 0.1);
-}
-
-/* =========================================
-   INPUT GROUP (INPUT + BOTÃO COLADOS)
-   ========================================= */
-textarea.vp-input {
-  min-height: 54px;
-  height: auto;
-  resize: none;
-  padding: 0.75rem 1rem;
-  line-height: 1.5;
-  font-family: var(--vp-mono);
-  box-sizing: border-box;
-}
-
-.vp-input-group {
-  display: flex;
-  width: 100%;
-  align-items: stretch;
-  /* Faz o botão acompanhar a altura do texto */
-  gap: 0;
-  /* Remove o espaço entre eles */
-}
-
-/* Borda reta à direita do input */
-.vp-input-group .vp-input {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-  flex: 1;
-}
-
-.vp-input-group .vp-input:focus {
-  z-index: 2;
-  position: relative;
-}
-
-/* Borda reta à esquerda do botão */
-.vp-input-group .vp-btn {
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  height: auto;
-  margin-left: -1px;
-}
-
-/* =========================================
-   TABELAS & BADGES
-   ========================================= */
-.vp-table-wrapper {
-  border: 1px solid var(--vp-border);
-  border-radius: 8px;
-  overflow-x: auto;
-  background: var(--vp-surface);
-}
-
-.vp-table-wrapper::-webkit-scrollbar {
-  height: 6px;
-}
-
-.vp-table-wrapper::-webkit-scrollbar-thumb {
-  background-color: #cbd5e1;
-  border-radius: 4px;
-}
-
-.vp-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-}
-
-.vp-table th {
-  background: var(--vp-surface-alt);
-  padding: 1rem;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--vp-text-muted);
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--vp-border);
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-}
-
-.vp-table td {
-  padding: 1rem;
-  border-bottom: 1px solid var(--vp-border);
-  font-size: 0.9rem;
-  white-space: nowrap;
-}
-
-.vp-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.vp-table tbody tr:hover {
-  background: var(--vp-surface-alt);
-}
-
-.vp-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-}
-
-.vp-badge::before {
-  content: '';
-  display: block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.vp-badge.ok {
-  background: #ecfdf5;
-  color: #065f46;
-}
-
-.vp-badge.ok::before {
-  background: var(--vp-green);
-}
-
-.vp-badge.faltando {
-  background: #fef2f2;
-  color: #991b1b;
-}
-
-.vp-badge.faltando::before {
-  background: var(--vp-red);
-}
-
-.vp-badge.sobrando {
-  background: #fffbeb;
-  color: #92400e;
-}
-
-.vp-badge.sobrando::before {
-  background: var(--vp-orange);
-}
-
-/* =========================================
-   CABEÇALHO & LOGO
-   ========================================= */
+/* Cabeçalho App Geral */
 .app-header {
   padding: 1.5rem 0;
   display: flex;
@@ -446,93 +113,274 @@ textarea.vp-input {
 .app-header .logo {
   max-height: 80px;
   width: auto;
-  display: block;
-  object-fit: contain;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.app-header .logo:hover {
-  transform: scale(1.03);
 }
 
 /* =========================================
-   REFINAMENTO PREMIUM & ANIMAÇÕES
-   ========================================= */
-.vp-card {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
-}
-
-.vp-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 20px -3px rgba(0, 0, 0, 0.06), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
-}
-
-.vp-card.no-hover:hover {
-  transform: none;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
-}
-
+   4. PADRONIZAÇÃO DE BOTÕES (.vp-btn)
+========================================= */
 .vp-btn {
-  border-radius: 8px;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--vp-sans);
+  font-weight: 600;
+  font-size: 1rem;
+  border-radius: var(--vp-radius-sm);
+  border: 1px solid transparent;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+  height: 48px;
+  padding: 0 1.5rem;
+  white-space: nowrap;
 }
 
+/* Tamanhos */
+.vp-btn-lg {
+  height: 54px;
+  font-size: 1.1rem;
+  border-radius: var(--vp-radius-md);
+}
+
+.vp-btn-sm {
+  height: 38px;
+  font-size: 0.9rem;
+  padding: 0 1rem;
+}
+
+/* Variantes */
 .vp-btn-primary {
-  background: linear-gradient(135deg, var(--vp-red) 0%, #ff2e2e 100%);
+  background: linear-gradient(135deg, var(--vp-primary) 0%, #ff2e2e 100%);
+  color: white;
   border: none;
 }
 
 .vp-btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--vp-red-hover) 0%, var(--vp-red) 100%);
+  background: linear-gradient(135deg, var(--vp-primary-hover) 0%, var(--vp-primary) 100%);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(216, 4, 4, 0.25);
+  box-shadow: 0 4px 12px rgba(226, 9, 9, 0.25);
 }
 
-.vp-btn-primary:active:not(:disabled) {
-  transform: translateY(0);
+.vp-btn-dark {
+  background-color: var(--vp-dark);
+  color: white;
 }
 
 .vp-btn-dark:hover:not(:disabled) {
-  background: #23272e;
+  background-color: #000;
   transform: translateY(-1px);
 }
 
+.vp-btn-success {
+  background-color: var(--vp-success);
+  color: white;
+}
+
+.vp-btn-success:hover:not(:disabled) {
+  background-color: #0d9646;
+  transform: translateY(-1px);
+}
+
+.vp-btn-outline {
+  background-color: var(--vp-surface);
+  border-color: var(--vp-border);
+  color: var(--vp-dark);
+}
+
 .vp-btn-outline:hover:not(:disabled) {
+  border-color: var(--vp-primary);
+  color: var(--vp-primary);
   background: var(--vp-surface-alt);
   transform: translateY(-1px);
 }
 
-/* Modais Arredondados e Elegantes */
-.modal-content {
-  border-radius: 12px !important;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04) !important;
-  border: none !important;
+.vp-btn-outline-danger {
+  background-color: transparent;
+  border-color: var(--vp-danger);
+  color: var(--vp-danger);
 }
 
-.modal-header {
-  border-top-left-radius: 12px !important;
-  border-top-right-radius: 12px !important;
+.vp-btn-outline-danger:hover:not(:disabled) {
+  background-color: var(--vp-danger);
+  color: white;
 }
 
-.modal-footer {
-  border-bottom-left-radius: 12px !important;
-  border-bottom-right-radius: 12px !important;
+.vp-btn-outline-warning {
+  background-color: transparent;
+  border-color: var(--vp-warning);
+  color: var(--vp-warning);
+}
+
+.vp-btn-outline-warning:hover:not(:disabled) {
+  background-color: var(--vp-warning);
+  color: white;
+}
+
+.vp-btn-outline-success {
+  background-color: transparent;
+  border-color: var(--vp-success);
+  color: var(--vp-success);
+}
+
+.vp-btn-outline-success:hover:not(:disabled) {
+  background-color: var(--vp-success);
+  color: white;
+}
+
+.vp-btn-ghost-danger {
+  background-color: transparent;
+  color: var(--vp-danger);
+  border: 1px solid transparent;
+}
+
+.vp-btn-ghost-danger:hover:not(:disabled) {
+  background-color: #fef2f2;
+  border-color: var(--vp-danger);
+}
+
+.vp-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 /* =========================================
-   PAINEL DO OPERADOR PREMIUM
-   ========================================= */
-.vp-operator-card {
+   5. PADRONIZAÇÃO DE INPUTS (.vp-input)
+========================================= */
+.vp-input,
+.form-control,
+.form-select {
+  font-family: var(--vp-sans);
+  border-radius: var(--vp-radius-sm) !important;
+  border: 1px solid var(--vp-border) !important;
+  background-color: var(--vp-surface-alt) !important;
+  color: var(--vp-text) !important;
+  transition: all 0.2s ease !important;
+  height: 48px;
+  padding: 0 1rem;
+  font-size: 1rem;
+  outline: none;
+}
+
+.vp-input-lg {
+  height: 60px;
+  font-size: 1.25rem !important;
+}
+
+.vp-input:focus,
+.form-control:focus,
+.form-select:focus,
+.vp-input-destaque:focus {
+  border-color: var(--vp-primary) !important;
+  background-color: var(--vp-surface) !important;
+  box-shadow: 0 0 0 3px rgba(226, 9, 9, 0.15) !important;
+}
+
+textarea.vp-input {
+  min-height: 54px;
+  height: auto !important;
+  font-family: var(--vp-mono);
+  line-height: 1.5;
+  padding: 0.75rem 1rem;
+}
+
+/* =========================================
+   6. CARDS, MODAIS E OVERLAYS
+========================================= */
+.vp-card {
   background: var(--vp-surface);
+  border-radius: var(--vp-radius-md);
+  padding: 1.5rem;
+  box-shadow: var(--vp-shadow-sm);
   border: 1px solid var(--vp-border);
-  border-radius: 12px;
-  padding: 1.25rem 1.5rem;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.vp-card:hover:not(.no-hover) {
+  transform: translateY(-2px);
+  box-shadow: var(--vp-shadow-md);
+}
+
+/* Modais Arredondados com Glassmorphism */
+.modal-content {
+  border-radius: var(--vp-radius-lg) !important;
+  border: none !important;
+  box-shadow: var(--vp-shadow-md) !important;
+  overflow: hidden;
+}
+
+.modal-header {
+  border-bottom: none !important;
+}
+
+.modal-footer {
+  border-top: none !important;
+}
+
+.vp-modal-overlay {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  transition: all 0.3s ease;
+}
+
+/* =========================================
+   7. TELA DE LOGIN (COMPORTAMENTO ESPECÍFICO)
+========================================= */
+.vp-login-logo {
+  max-height: 60px;
+  object-fit: contain;
+}
+
+.vp-login-title {
+  font-size: clamp(1.1rem, 4vw, 1.25rem);
+}
+
+.vp-login-badge {
+  font-size: 0.8rem;
+  letter-spacing: 0.3px;
+}
+
+.vp-login-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.5px;
+}
+
+@media (max-width: 380px) {
+  .vp-login-logo {
+    max-height: 48px;
+    margin-bottom: 1rem !important;
+  }
+
+  .card-body {
+    padding: 1.5rem !important;
+  }
+
+  .vp-login-badge {
+    font-size: 0.7rem;
+    padding: 0.4rem 0.8rem !important;
+  }
+}
+
+/* =========================================
+   8. PAINEL DO OPERADOR E IMPORTAÇÃO SAP
+========================================= */
+.vp-operator-card {
+  background-color: var(--vp-surface);
+  border: 1px solid var(--vp-border);
+  border-radius: var(--vp-radius-md);
+  box-shadow: var(--vp-shadow-sm);
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 1.5rem;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
+  padding: 1.25rem 1.5rem;
+  transition: box-shadow 0.3s ease;
+}
+
+.vp-operator-card:hover {
+  box-shadow: var(--vp-shadow-md);
 }
 
 .vp-operator-info {
@@ -545,21 +393,19 @@ textarea.vp-input {
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--vp-red) 0%, #ff4b4b 100%);
+  background: linear-gradient(135deg, var(--vp-primary) 0%, #ff4b4b 100%);
   color: white;
   font-weight: 700;
   font-size: 1.1rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 10px rgba(216, 4, 4, 0.20);
-  letter-spacing: 0.5px;
+  box-shadow: 0 4px 10px rgba(226, 9, 9, 0.20);
 }
 
 .vp-operator-name {
   font-size: 1.1rem;
   font-weight: 600;
-  color: var(--vp-text);
   margin: 0 0 0.15rem 0;
 }
 
@@ -567,7 +413,6 @@ textarea.vp-input {
   font-family: var(--vp-mono);
   font-size: 0.8rem;
   background: var(--vp-surface-alt);
-  color: var(--vp-text-muted);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   border: 1px solid var(--vp-border);
@@ -582,15 +427,12 @@ textarea.vp-input {
   align-items: center;
 }
 
-/* =========================================
-   CARTÃO SAP PREMIUM
-   ========================================= */
 .vp-sap-card {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 1.5rem;
-  border-left: 4px solid var(--vp-text-muted);
+  border-left: 4px solid var(--vp-gray);
 }
 
 .vp-sap-info {
@@ -604,7 +446,7 @@ textarea.vp-input {
   height: 44px;
   border-radius: 8px;
   background: #f1f5f9;
-  color: var(--vp-text-muted);
+  color: var(--vp-gray);
   font-size: 1.5rem;
   display: flex;
   align-items: center;
@@ -612,17 +454,30 @@ textarea.vp-input {
 }
 
 /* =========================================
-   AÇÕES DO SCANNER
-   ========================================= */
-.vp-scanner-actions {
-  display: flex;
-  gap: 0.75rem;
-  margin-top: 1.25rem;
+   9. MÁQUINA DE ESTADOS (INVENTÁRIO)
+========================================= */
+.vp-modo-card {
+  border-color: var(--vp-border);
+  background-color: var(--vp-surface);
+  transition: all 0.2s ease;
+}
+
+.vp-modo-card:hover {
+  background-color: var(--vp-surface-alt);
+  border-color: var(--vp-primary) !important;
+  transform: translateY(-3px);
+  box-shadow: var(--vp-shadow-hover);
+}
+
+.vp-modo-card:hover .vp-modo-icon {
+  color: var(--vp-primary) !important;
+  transform: scale(1.1);
+  transition: all 0.2s ease;
 }
 
 /* =========================================
-   CONTADORES PREMIUM E LUMINOSOS
-   ========================================= */
+   10. CONTADORES LUMINOSOS
+========================================= */
 .vp-counters-container {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -633,14 +488,18 @@ textarea.vp-input {
 .vp-counter-card {
   background: var(--vp-surface);
   border: 1px solid var(--vp-border);
-  border-radius: 12px;
+  border-radius: var(--vp-radius-md);
   padding: 1.25rem;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.3s ease;
   position: relative;
   overflow: hidden;
+}
+
+.vp-counter-card:hover {
+  transform: translateY(-3px);
 }
 
 .vp-counter-header {
@@ -658,10 +517,6 @@ textarea.vp-input {
   letter-spacing: 0.8px;
 }
 
-.vp-counter-header i {
-  font-size: 1.1rem;
-}
-
 .vp-counter-value {
   font-size: 2.2rem;
   font-weight: 300;
@@ -669,46 +524,31 @@ textarea.vp-input {
   line-height: 1;
 }
 
-/* Cores específicas dos contadores com gradiente sutil de fundo e borda */
 .vp-counter-card.esperadas {
   background: linear-gradient(135deg, var(--vp-surface) 0%, #f8fafc 100%);
-  border-bottom: 4px solid var(--vp-text-muted);
-}
-
-.vp-counter-card.esperadas .vp-counter-value {
-  color: var(--vp-text);
+  border-bottom: 4px solid var(--vp-gray);
 }
 
 .vp-counter-card.lidas {
   background: linear-gradient(135deg, var(--vp-surface) 0%, #f0fdf4 100%);
-  border-bottom: 4px solid var(--vp-green);
+  border-bottom: 4px solid var(--vp-success);
   border-color: rgba(16, 185, 129, 0.3);
 }
 
-.vp-counter-card.lidas .vp-counter-value {
-  color: var(--vp-green);
-}
-
+.vp-counter-card.lidas .vp-counter-value,
 .vp-counter-card.lidas i {
-  color: var(--vp-green);
+  color: var(--vp-success);
 }
 
 .vp-counter-card.faltam {
   background: linear-gradient(135deg, var(--vp-surface) 0%, #fef2f2 100%);
-  border-bottom: 4px solid var(--vp-red);
-  border-color: rgba(216, 4, 4, 0.3);
+  border-bottom: 4px solid var(--vp-danger);
+  border-color: rgba(213, 25, 32, 0.3);
 }
 
-.vp-counter-card.faltam .vp-counter-value {
-  color: var(--vp-red);
-}
-
+.vp-counter-card.faltam .vp-counter-value,
 .vp-counter-card.faltam i {
-  color: var(--vp-red);
-}
-
-.vp-counter-card:hover {
-  transform: translateY(-3px);
+  color: var(--vp-danger);
 }
 
 .vp-counter-card.esperadas:hover {
@@ -724,18 +564,68 @@ textarea.vp-input {
 }
 
 /* =========================================
-   AÇÕES DO RODAPÉ (BOTTOM ACTIONS)
-   ========================================= */
-.vp-bottom-actions {
+   11. TABELAS (DESKTOP) E DETALHES
+========================================= */
+.vp-table-wrapper {
+  border: 1px solid var(--vp-border);
+  border-radius: var(--vp-radius-sm);
+  overflow-x: auto;
+  background: var(--vp-surface);
+}
+
+.vp-table-wrapper::-webkit-scrollbar {
+  height: 6px;
+}
+
+.vp-table-wrapper::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 4px;
+}
+
+.vp-table-row-main {
+  transition: background-color 0.2s ease;
+}
+
+.vp-table-row-main:hover {
+  background-color: rgba(0, 0, 0, 0.02) !important;
+}
+
+.vp-row-expanded {
+  background-color: rgba(226, 9, 9, 0.04) !important;
+}
+
+.vp-table-row-details {
+  background-color: #fcfdfe;
+  animation: vpSlideDown 0.25s ease-out;
+}
+
+.vp-row-details-content {
+  border-left: 4px solid var(--vp-primary);
+}
+
+.vp-detail-block {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 1.5rem;
+  gap: 0.2rem;
+}
+
+.vp-detail-label {
+  font-size: 0.7rem;
+  color: var(--vp-text-muted);
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.vp-detail-val {
+  font-size: 0.85rem;
+  color: var(--vp-text);
+  word-break: break-word;
 }
 
 /* =========================================
-   VISUALIZAÇÃO DE CARDS NO MOBILE
-   ========================================= */
+   12. CARTÕES MOBILE (RESPONSIVIDADE)
+========================================= */
 .vp-mobile-cards-list {
   display: none;
 }
@@ -747,14 +637,14 @@ textarea.vp-input {
 .vp-mobile-report-card {
   background: var(--vp-surface);
   border: 1px solid var(--vp-border);
-  border-radius: 12px;
+  border-radius: var(--vp-radius-md);
   padding: 1rem;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   position: relative;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: all 0.3s ease !important;
   overflow: hidden;
 }
 
@@ -768,15 +658,26 @@ textarea.vp-input {
 }
 
 .vp-mobile-report-card.ok::before {
-  background: var(--vp-green);
+  background: var(--vp-success);
 }
 
 .vp-mobile-report-card.faltando::before {
-  background: var(--vp-red);
+  background: var(--vp-danger);
 }
 
 .vp-mobile-report-card.sobrando::before {
-  background: var(--vp-orange);
+  background: var(--vp-warning);
+}
+
+.vp-mobile-report-card.expanded {
+  box-shadow: var(--vp-shadow-md) !important;
+  transform: translateY(-2px);
+  border-color: rgba(226, 9, 9, 0.35) !important;
+  background: linear-gradient(135deg, var(--vp-surface) 0%, #fdfcfc 100%) !important;
+}
+
+.vp-mobile-card-extra {
+  animation: vpFadeIn 0.25s ease-out;
 }
 
 .vp-mobile-card-header {
@@ -791,12 +692,6 @@ textarea.vp-input {
   font-family: var(--vp-mono);
   font-weight: 700;
   font-size: 0.95rem;
-  color: var(--vp-text);
-  display: flex;
-  align-items: center;
-}
-
-.vp-mobile-card-actions {
   display: flex;
   align-items: center;
 }
@@ -804,25 +699,16 @@ textarea.vp-input {
 .vp-btn-delete {
   background: transparent;
   border: none;
-  color: var(--vp-red);
+  color: var(--vp-danger);
   font-size: 1.1rem;
   cursor: pointer;
   padding: 0.25rem;
   border-radius: 4px;
   transition: background 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .vp-btn-delete:hover {
   background: #fef2f2;
-}
-
-.vp-mobile-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
 }
 
 .vp-mobile-card-row {
@@ -874,14 +760,6 @@ textarea.vp-input {
   flex-direction: column;
 }
 
-.vp-detail-label {
-  font-size: 0.7rem;
-  color: var(--vp-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  margin-bottom: 0.1rem;
-}
-
 .vp-detail-value {
   font-size: 0.8rem;
   color: var(--vp-text);
@@ -892,204 +770,8 @@ textarea.vp-input {
 }
 
 /* =========================================
-   AJUSTES DE RESPONSIVIDADE (MOBILE)
-   ========================================= */
-@media (max-width: 768px) {
-  .vp-mobile-cards-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    margin-bottom: 2rem;
-  }
-
-  .vp-desktop-table-wrapper {
-    display: none;
-  }
-}
-
-@media (max-width: 576px) {
-  .app-header {
-    padding: 1rem 0;
-  }
-
-  .app-header .logo {
-    max-height: 40px;
-  }
-
-  .vp-input-group {
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .vp-input-group .vp-input {
-    border-radius: 6px !important;
-    min-height: 60px;
-  }
-
-  .vp-input-group .vp-btn {
-    border-radius: 6px !important;
-    width: 100%;
-    height: 46px;
-    margin-left: 0;
-    justify-content: center;
-  }
-
-  .vp-operator-card {
-    flex-direction: column;
-    align-items: stretch;
-    padding: 1.25rem 1rem;
-    gap: 1.25rem;
-  }
-
-  .vp-operator-actions {
-    width: 100%;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .vp-operator-actions .vp-btn {
-    width: 100%;
-    justify-content: center;
-  }
-
-  .vp-sap-card {
-    flex-direction: column;
-    align-items: stretch;
-    border-left: none;
-    border-top: 4px solid var(--vp-text-muted);
-    padding: 1.25rem 1rem;
-    gap: 1.25rem;
-  }
-
-  .vp-sap-info {
-    flex-direction: column;
-    text-align: center;
-  }
-
-  .vp-counters-container {
-    grid-template-columns: 1fr;
-    gap: 0.75rem;
-  }
-
-  .vp-counter-card {
-    padding: 1rem;
-  }
-
-  .vp-scanner-actions {
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .vp-scanner-actions .vp-btn {
-    width: 100%;
-    justify-content: center;
-  }
-}
-
-/* =========================================
-   LINHAS EXPANDÍVEIS E DETALHES (DESKTOP & MOBILE)
-   ========================================= */
-.vp-table-row-main {
-  transition: background-color 0.2s ease;
-}
-
-.vp-table-row-main:hover {
-  background-color: rgba(0, 0, 0, 0.02) !important;
-}
-
-.vp-row-expanded {
-  background-color: rgba(213, 25, 32, 0.04) !important;
-}
-
-.vp-table-row-details {
-  background-color: #fcfdfe;
-  animation: vpSlideDown 0.25s ease-out;
-}
-
-.vp-row-details-content {
-  border-left: 4px solid var(--vp-red);
-}
-
-.vp-detail-block {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.vp-detail-label {
-  font-size: 0.7rem;
-  color: var(--vp-text-muted);
-  text-transform: uppercase;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-}
-
-.vp-detail-val {
-  font-size: 0.85rem;
-  color: var(--vp-text);
-  word-break: break-word;
-}
-
-.vp-mobile-report-card {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-}
-
-.vp-mobile-report-card.expanded {
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.06), 0 4px 6px -2px rgba(0, 0, 0, 0.03) !important;
-  transform: translateY(-2px);
-  border-color: rgba(213, 25, 32, 0.35) !important;
-  background: linear-gradient(135deg, var(--vp-surface) 0%, #fdfcfc 100%) !important;
-}
-
-.vp-mobile-card-extra {
-  animation: vpFadeIn 0.25s ease-out;
-}
-
-/* =========================================
-   SOBRESCREVENDO CONTROLES BOOTSTRAP (FILTER CONTROLS)
-   ========================================= */
-.form-control,
-.form-select {
-  font-family: var(--vp-sans) !important;
-  border: 1px solid var(--vp-border) !important;
-  border-radius: 8px !important;
-  font-size: 0.9rem !important;
-  height: 44px !important;
-  background-color: var(--vp-surface-alt) !important;
-  transition: border-color 0.2s, box-shadow 0.2s !important;
-  color: var(--vp-text) !important;
-}
-
-.form-control:focus,
-.form-select:focus {
-  border-color: var(--vp-red) !important;
-  background-color: var(--vp-surface) !important;
-  box-shadow: 0 0 0 3px rgba(216, 4, 4, 0.15) !important;
-  outline: none !important;
-}
-
-/* Glassmorphism nos modais */
-.vp-modal-overlay {
-  background-color: rgba(0, 0, 0, 0.45) !important;
-  backdrop-filter: blur(8px) !important;
-  -webkit-backdrop-filter: blur(8px) !important;
-  transition: all 0.3s ease;
-}
-
-/* Evitando zoom automático em inputs no iOS */
-@media (max-width: 768px) {
-
-  .vp-input,
-  textarea.vp-input,
-  .form-control,
-  .form-select {
-    font-size: 14px !important;
-  }
-}
-
-/* =========================================
-   ANIMAÇÕES
-   ========================================= */
+   13. ANIMAÇÕES GLOBAIS
+========================================= */
 @keyframes vpSlideDown {
   from {
     opacity: 0;
@@ -1113,132 +795,100 @@ textarea.vp-input {
 }
 
 /* =========================================
-   AJUSTES GLOBAIS PARA MOBILE (Telas < 768px)
-   Reduz o tamanho de TUDO para caber melhor no celular
-   ========================================= */
-@media (max-width: 767.98px) {
+   14. MEDIA QUERIES (AJUSTES PARA MOBILE)
+========================================= */
+@media (max-width: 768px) {
 
-  /* Reduz a proporção geral da raiz (Tudo que usa 'rem' encolhe) */
-  html {
-    font-size: 13px !important;
+  /* Ativa os cards no mobile e esconde a tabela desktop */
+  .vp-mobile-cards-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-bottom: 2rem;
   }
 
-  /* Reduz paddings dos cartões e modais */
-  .card,
+  .vp-desktop-table-wrapper {
+    display: none;
+  }
+
+  /* Proteção contra Zoom Automático no iOS */
+  .vp-input,
+  textarea.vp-input,
+  .form-control,
+  .form-select {
+    font-size: 16px !important;
+  }
+}
+
+@media (max-width: 576px) {
+
+  /* Ajusta paddings e layout para ecrãs muito pequenos */
+  html {
+    font-size: 14px;
+  }
+
   .vp-card,
   .vp-operator-card,
   .modal-body,
   .modal-header,
   .modal-footer {
-    padding: 0.85rem !important;
+    padding: 1rem !important;
   }
 
-  /* Achata botões */
-  .btn,
-  .vp-btn {
-    padding: 0.4rem 0.75rem !important;
-    font-size: 0.9rem !important;
-    height: auto !important;
-    min-height: 38px !important;
-    touch-action: manipulation !important;
+  .app-header {
+    padding: 1rem 0;
   }
 
-  /* Inputs menores em altura (mas fontes forçadas a 16px pela regra do iOS acima) */
-  .form-control,
-  .form-select,
-  .vp-input,
-  textarea.vp-input {
-    padding: 0.4rem 0.75rem !important;
-    font-size: 12px !important;
-    height: auto !important;
-    min-height: 40px !important;
+  .app-header .logo {
+    max-height: 40px;
   }
 
-  /* Diminui a caixa de bipagem */
-  .vp-input-group textarea {
-    min-height: 40px !important;
+  .vp-operator-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
   }
 
-  /* Textos menores */
-  h2.vp-title {
-    font-size: 1.25rem !important;
+  .vp-operator-actions {
+    width: 100%;
+    flex-direction: column;
+    gap: 0.5rem;
   }
 
-  h3.vp-title {
-    font-size: 1.1rem !important;
+  .vp-operator-actions .vp-btn {
+    width: 100%;
   }
 
-  .vp-operator-name {
-    font-size: 1.1rem !important;
+  .vp-sap-card {
+    flex-direction: column;
+    align-items: stretch;
+    border-left: none;
+    border-top: 4px solid var(--vp-gray);
+    text-align: center;
   }
 
-  .vp-subtitle {
-    font-size: 0.85rem !important;
-    margin-bottom: 0.75rem !important;
+  .vp-sap-info {
+    flex-direction: column;
   }
 
-  /* Ajuste Contadores */
   .vp-counters-container {
-    gap: 0.5rem !important;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
   }
 
   .vp-counter-card {
-    padding: 0.75rem !important;
+    padding: 1rem;
   }
 
-  .vp-counter-value {
-    font-size: 1.5rem !important;
+  .vp-btn,
+  .vp-input,
+  .form-control,
+  .form-select {
+    height: 44px;
   }
 
-  .vp-counter-label {
-    font-size: 0.75rem !important;
-  }
-
-  /* Ajuste dos Cartões de Conferência */
-  .vp-mobile-report-card {
-    padding: 0.75rem !important;
-    margin-bottom: 0.5rem !important;
-  }
-
-  .vp-mobile-card-lote {
-    font-size: 1rem !important;
-  }
-
-  .vp-mobile-card-details .vp-detail-item {
-    font-size: 0.85rem !important;
-    margin-bottom: 0.15rem !important;
-  }
-
-  .vp-detail-label {
-    font-size: 0.75rem !important;
-  }
-
-  .vp-detail-val {
-    font-size: 0.85rem !important;
-  }
-
-  /* Ajuste Logo Login */
-  .logo-videplast-login,
-  .app-header .logo,
-  img[alt="Videplast"] {
-    pointer-events: none !important;
-    user-select: none !important;
-    -webkit-user-select: none !important;
-    -webkit-touch-callout: none !important;
-    transform: none !important;
-  }
-
-  /* Ajuste Ações de Rodapé */
-  .vp-bottom-actions button {
-    height: 42px !important;
-    font-size: 0.9rem !important;
-    padding: 0.5rem !important;
-  }
-
-  /* Ajuste Iniciais Operador */
-  .vp-operator-avatar {
-    width: 40px !important;
-    height: 40px !important;
-    font-size: 1rem !important;
+  .vp-btn-lg {
+    height: 48px;
+    font-size: 1rem;
   }
 }
