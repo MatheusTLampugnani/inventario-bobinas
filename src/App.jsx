@@ -7,6 +7,11 @@ import FilterControls from './components/FilterControls'
 import ProcessadorDrone from './components/ProcessadorDrone'
 import './App.css'
 
+const limparCodigo = (codigo) => {
+    if (!codigo) return '';
+    return String(codigo).replace(/^0+/, '');
+};
+
 const obterIniciais = (nome) => {
   if (!nome) return 'OP';
   const partes = nome.trim().split(/\s+/);
@@ -25,43 +30,40 @@ const determinarFilial = (lote) => {
   return null;
 };
 
-const extrairLotesDoTexto = (textoLido) => {
-  if (!textoLido) return [];
-  const textoLimpo = textoLido.toUpperCase().replace(/[\r\n\t]+/g, ' ');
-
-  let trechoValido = textoLimpo;
-
-  const indexInicio = textoLimpo.indexOf('VL2LT');
-  if (indexInicio !== -1) {
-    const indexFim = textoLimpo.indexOf('KG', indexInicio);
-    if (indexFim !== -1) {
-      trechoValido = textoLimpo.substring(indexInicio + 5, indexFim);
-    } else {
-      trechoValido = textoLimpo.substring(indexInicio + 5);
-    }
-  }
-  const regexValidos = /(RA|MA|VA)\d+/g;
-  return trechoValido.match(regexValidos) || [];
+const removerZeros = (val) => {
+    if (!val) return null;
+    const limpo = val.trim().replace(/^0+/, '');
+    return limpo === '' ? '0' : limpo;
 };
 
 function App() {
-  // ESTADOS DE LOGIN
+  // ESTADOS DE LOGIN E DADOS
   const [crachaLogado, setCrachaLogado] = useState(() => sessionStorage.getItem('usuario_cracha') || '');
   const [nomeLogado, setNomeLogado] = useState(() => sessionStorage.getItem('usuario_nome') || '');
   const [inputCracha, setInputCracha] = useState('');
   const [carregandoLogin, setCarregandoLogin] = useState(false);
   const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('usuario_is_admin') === 'true');
   const [leiturasGlobais, setLeiturasGlobais] = useState([]);
+  const [depositosDisponiveis, setDepositosDisponiveis] = useState([]);
+  
+  // ESTADO ROTAS
+  const [rotasDisponiveis, setRotasDisponiveis] = useState([]);
+  const [rotaAtual, setRotaAtual] = useState(''); 
 
-  // ESTADOS DO FILTRO E PAGINAÇÃO DA CONFERÊNCIA
+  // ESTADOS DO FILTRO E PAGINAÇÃO
   const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '' });
   const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
   const [paginaAtual, setPaginaAtual] = useState(1);
   const ITENS_POR_PAGINA = 50;
 
-  const [usandoDrone, setUsandoDrone] = useState(false);
+  // ESTADOS DA MÁQUINA DE INVENTÁRIO
+  const [etapaInventario, setEtapaInventario] = useState('OCIOSO');
+  const [modoInventario, setModoInventario] = useState(null);
+  const [depositoAtual, setDepositoAtual] = useState('');
+  const [gondolaAtual, setGondolaAtual] = useState('');
+  const [gavetaAtual, setGavetaAtual] = useState('');
 
-  // ESTADOS DO INVENTÁRIO 
+  const [usandoDrone, setUsandoDrone] = useState(false);
   const [codigo, setCodigo] = useState('')
   const [usandoCamera, setUsandoCamera] = useState(false)
   const [carregandoAcao, setCarregandoAcao] = useState(false)
@@ -78,23 +80,38 @@ function App() {
   })
 
   const [modal, setModal] = useState({
-    show: false, title: '', message: '', type: 'alert', onConfirm: null
+    show: false, title: '', message: '', type: 'alert', onConfirm: null, confirmText: 'Sim', cancelText: 'Cancelar'
   })
 
   const [showConferencia, setShowConferencia] = useState(false);
   const [lotesExpandidos, setLotesExpandidos] = useState({});
 
-  const toggleLoteExpandido = (loteKey) => {
-    setLotesExpandidos(prev => ({
-      ...prev,
-      [loteKey]: !prev[loteKey]
-    }));
-  };
-
   const inputRef = useRef(null)
+  const gondolaInputRef = useRef(null)
+  const gavetaInputRef = useRef(null)
   const fileInputRef = useRef(null)
 
-  // EFEITOS
+  const toggleLoteExpandido = (loteKey) => {
+    setLotesExpandidos(prev => ({ ...prev, [loteKey]: !prev[loteKey] }));
+  };
+
+  useEffect(() => {
+    const carregarDadosIniciais = async () => {
+        try {
+            const { data: deps, error: errDeps } = await supabase.from('depositos').select('*').order('id', { ascending: true });
+            if (errDeps) throw errDeps;
+            if (deps) setDepositosDisponiveis(deps.map(d => ({ id: d.id, nome: d.nome, requerEndereco: d.requer_endereco })));
+            
+            const { data: rots, error: errRots } = await supabase.from('rotas').select('id, rota');
+            if (errRots) throw errRots;
+            if (rots) setRotasDisponiveis(rots);
+        } catch (err) {
+            console.error("Erro ao carregar dados iniciais:", err);
+        }
+    };
+    carregarDadosIniciais();
+  }, []);
+
   useEffect(() => {
     sessionStorage.setItem('csv_bobinas', JSON.stringify(csvBobinas));
     sessionStorage.setItem('lidas_bobinas', JSON.stringify(bobinasLidas));
@@ -115,320 +132,272 @@ function App() {
   }, [crachaLogado, nomeLogado, isAdmin]);
 
   useEffect(() => {
-    if (crachaLogado && inputRef.current && !modal.show && !showConferencia && !usandoCamera) {
+    if (etapaInventario === 'BIPANDO' && inputRef.current && !modal.show && !showConferencia && !usandoCamera) {
       inputRef.current.focus();
+    } else if (etapaInventario === 'INFORMAR_ENDERECO') {
+      const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
+      if (depInfo && depInfo.requerEndereco) {
+        if (!gondolaAtual && gondolaInputRef.current) {
+          gondolaInputRef.current.focus();
+        } else if (gavetaInputRef.current) {
+          gavetaInputRef.current.focus();
+        }
+      }
     }
-  }, [crachaLogado, modal.show, showConferencia, usandoCamera]);
+  }, [etapaInventario, modal.show, showConferencia, usandoCamera, depositoAtual, gondolaAtual, depositosDisponiveis]);
 
   useEffect(() => {
     setPaginaAtual(1);
     setLotesExpandidos({});
   }, [conferenciaFilters, conferenciaSort]);
 
-  // FUNÇÕES DE MODAL
   const fecharModal = () => setModal({ ...modal, show: false });
-
-  const abrirAlerta = (titulo, message) => {
-    setModal({ show: true, title: titulo, message: message, type: 'alert', onConfirm: null });
-  }
-
-  const abrirConfirmacao = (titulo, message, acaoConfirmar) => {
+  const abrirAlerta = (titulo, message) => setModal({ show: true, title: titulo, message: message, type: 'alert', onConfirm: null });
+  const abrirConfirmacao = (titulo, message, acaoConfirmar, confirmText = 'Sim', cancelText = 'Cancelar') => {
     setModal({
-      show: true, title: titulo, message: message, type: 'confirm',
+      show: true, title: titulo, message: message, type: 'confirm', confirmText, cancelText,
       onConfirm: () => { acaoConfirmar(); fecharModal(); }
     });
   }
 
-  // FUNÇÕES DE LOGIN
   const fazerLogin = async () => {
-    if (!inputCracha.trim()) {
-      abrirAlerta('Atenção', 'Por favor, insira o número do seu crachá.');
-      return;
-    }
-
+    if (!inputCracha.trim()) { abrirAlerta('Atenção', 'Insira o número do seu crachá.'); return; }
     setCarregandoLogin(true);
-
     try {
-      const { data, error } = await supabase
-        .from('crachas')
-        .select('id, nome_completo, admin')
-        .eq('id', inputCracha.trim())
-        .single();
-
-      if (error) {
-        console.error("Erro detalhado do Supabase:", error);
-        abrirAlerta('Acesso Negado', 'Crachá não encontrado. Verifique se o número está correto.');
-        setCarregandoLogin(false);
-        return;
-      }
-
-      if (data) {
-        setCrachaLogado(inputCracha.trim());
-        setNomeLogado(data.nome_completo || 'Operador');
-        setIsAdmin(!!data.admin);
-      }
-
+      const { data, error } = await supabase.from('crachas').select('id, nome_completo, admin').eq('id', inputCracha.trim()).single();
+      if (error) { abrirAlerta('Acesso Negado', 'Crachá não encontrado.'); setCarregandoLogin(false); return; }
+      if (data) { setCrachaLogado(inputCracha.trim()); setNomeLogado(data.nome_completo || 'Operador'); setIsAdmin(!!data.admin); }
     } catch (err) {
-      console.error(err);
-      abrirAlerta('Erro', 'Não foi possível conectar ao banco de dados Supabase.');
-    } finally {
-      setCarregandoLogin(false);
-    }
+      abrirAlerta('Erro', 'Não foi conectar ao banco Supabase.');
+    } finally { setCarregandoLogin(false); }
   }
 
   const fazerLogout = () => {
     abrirConfirmacao('Sair', 'Deseja sair? Seus dados continuarão na tela.', () => {
-      setCrachaLogado('');
-      setNomeLogado('');
-      setInputCracha('');
-      setIsAdmin(false);
+      setCrachaLogado(''); setNomeLogado(''); setInputCracha(''); setIsAdmin(false);
     });
   }
 
   const garantirSessao = async () => {
     if (sessaoId) {
-      const { data } = await supabase
-        .from('sessoes_inventario')
-        .select('id')
-        .eq('id', sessaoId)
-        .maybeSingle();
-
+      const { data } = await supabase.from('sessoes_inventario').select('id').eq('id', sessaoId).maybeSingle();
       if (data) return sessaoId;
     }
-
-    const { data, error } = await supabase
-      .from('sessoes_inventario')
-      .insert([{ cracha_importacao: crachaLogado, status: 'Em andamento' }])
-      .select('id')
-      .single();
-
-    if (error) {
-      console.error("Erro ao criar sessão:", error);
-      throw error;
-    }
-
+    const { data, error } = await supabase.from('sessoes_inventario').insert([{ cracha_importacao: crachaLogado, status: 'Em andamento' }]).select('id').single();
+    if (error) throw error;
     setSessaoId(data.id);
     return data.id;
   }
 
-  const limparValorParaBanco = (valor) => {
-    if (valor === undefined || valor === null || String(valor).trim() === '') return null;
-    return String(valor).trim();
-  }
-
-  const limparNumeroParaBanco = (valor) => {
-    if (valor === undefined || valor === null || String(valor).trim() === '') return null;
-    let formatado = String(valor).trim();
-
-    if (formatado.includes(',')) {
-      formatado = formatado.replace(/\./g, '').replace(',', '.');
-    }
+  const limparValorParaBanco = (val) => (val === undefined || val === null || String(val).trim() === '') ? null : String(val).trim();
+  const limparNumeroParaBanco = (val) => {
+    if (val === undefined || val === null || String(val).trim() === '') return null;
+    let formatado = String(val).trim();
+    if (formatado.includes(',')) formatado = formatado.replace(/\./g, '').replace(',', '.');
     return formatado;
   }
+
+  const formatarEnderecoSAP = (bobina) => {
+    if (!bobina) return '-';
+    if (bobina.posicao && !bobina.deposito) {
+        return `Posição: ${bobina.posicao}`;
+    }
+    const depInfo = depositosDisponiveis.find(d => d.id === bobina.deposito);
+    if (depInfo && !depInfo.requerEndereco) {
+      return `Depósito: ${bobina.deposito}`;
+    }
+    if (bobina.gondola || bobina.posicao) {
+      return `Depósito: ${bobina.deposito || '-'} | G: ${bobina.gondola || '-'} | P: ${bobina.posicao || '-'}`;
+    }
+    return `Depósito: ${bobina.deposito || '-'}`;
+  };
 
   const abrirConferenciaAdmin = async () => {
     setShowConferencia(true);
     setPaginaAtual(1);
-
     setCarregandoAcao(true);
     try {
-      const { data: leituras, error: erroLeituras } = await supabase
-        .from('bobinas_lidas')
-        .select('*');
-
-      const { data: crachas } = await supabase
-        .from('crachas')
-        .select('id, nome_completo');
-
-      const { data: sapBanco } = await supabase
-        .from('bobinas_sap')
-        .select('*');
+      const { data: leituras, error: erroLeituras } = await supabase.from('bobinas_lidas').select('*');
+      const { data: crachas } = await supabase.from('crachas').select('id, nome_completo');
+      const { data: sapBanco } = await supabase.from('bobinas_sap').select('*');
 
       if (erroLeituras) throw erroLeituras;
 
       if (leituras) {
         const listaGlobal = leituras.map(b => {
           const dono = crachas?.find(c => c.id === b.cracha_leitura);
-          const dadosSap = sapBanco?.find(s => s.lote === b.lote) || csvBobinas.find(c => c.lote === b.lote);
-
+          const dadosSap = sapBanco?.find(s => s.lote === b.codigo) || csvBobinas.find(c => c.codigo === b.codigo);
           const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
-          let dataFormatada = '-';
-          if (dataOriginal) {
-            dataFormatada = new Date(dataOriginal).toLocaleString('pt-BR');
-          }
+          let dataFormatada = dataOriginal ? new Date(dataOriginal).toLocaleString('pt-BR') : '-';
+          const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.codigo) || '-';
 
-          const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
+          const nomeRota = rotasDisponiveis.find(r => String(r.id) === String(b.rotas))?.rota || b.rotas || '-';
 
           return {
-            codigo: b.lote,
-            dataHora: dataFormatada,
-            cracha: b.cracha_leitura,
-            nome: dono ? dono.nome_completo : b.cracha_leitura,
-            filial: filialFinal,
-            deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
-            material: dadosSap ? (dadosSap.material || '-') : '-',
-            descricao: dadosSap ? (dadosSap.descricao || '-') : '-',
-            peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
-            largura: dadosSap ? (dadosSap.largura || '-') : '-',
-            espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
-            ordem_producao: dadosSap ? (dadosSap.ordem_producao || '-') : '-',
-            ordem_venda: dadosSap ? (dadosSap.ordem_venda || '-') : '-',
-            cliente: dadosSap ? (dadosSap.cliente || '-') : '-',
-            nome_cliente: dadosSap ? (dadosSap.nome_cliente || '-') : '-'
+            codigo: b.codigo, dataHora: dataFormatada, cracha: b.cracha_leitura, nome: dono ? dono.nome_completo : b.cracha_leitura,
+            lote: b.lote, romaneio: b.romaneio,
+            filial: filialFinal, deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
+            endereco_lido: b.endereco_lido || '-', endereco_sap: formatarEnderecoSAP(dadosSap),
+            agrupador: dadosSap ? (dadosSap.agrupador || '-') : '-', material: dadosSap ? (dadosSap.material || '-') : '-',
+            descricao: dadosSap ? (dadosSap.descricao || '-') : '-', peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
+            largura: dadosSap ? (dadosSap.largura || '-') : '-', espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
+            ordem_producao: dadosSap ? (dadosSap.ordem_producao || '-') : '-', ordem_venda: dadosSap ? (dadosSap.ordem_venda || '-') : '-',
+            cliente: dadosSap ? (dadosSap.cliente || '-') : '-', nome_cliente: dadosSap ? (dadosSap.nome_cliente || '-') : '-',
+            rota: nomeRota
           };
         });
-
         setLeiturasGlobais(listaGlobal);
       }
-    } catch (err) {
-      console.error("Erro ao sincronizar as leituras globais:", err);
-    } finally {
-      setCarregandoAcao(false);
-    }
+    } catch (err) { console.error(err); } finally { setCarregandoAcao(false); }
   };
 
-  // FUNÇÕES DE INVENTÁRIO
   const importarCSV = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     setCarregandoAcao(true);
-
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
         const text = event.target.result;
         const linhas = text.split(/\r?\n/).filter(linha => linha.trim() !== '');
-
-        if (linhas.length === 0) {
-          setCarregandoAcao(false);
-          return;
-        }
+        if (linhas.length === 0) { setCarregandoAcao(false); return; }
 
         let idxCabecalho = 0;
         for (let i = 0; i < Math.min(10, linhas.length); i++) {
-          if (linhas[i].toLowerCase().includes('lote')) {
-            idxCabecalho = i;
-            break;
+          if (linhas[i].toLowerCase().includes('posição') || linhas[i].toLowerCase().includes('posicao') || linhas[i].toLowerCase().includes('romaneio') || linhas[i].toLowerCase().includes('lote')) { 
+            idxCabecalho = i; 
+            break; 
           }
         }
 
         const linhaCabecalho = linhas[idxCabecalho];
-        const countPontoVirgula = (linhaCabecalho.match(/;/g) || []).length;
-        const countVirgula = (linhaCabecalho.match(/,/g) || []).length;
-        const separator = countPontoVirgula > countVirgula ? ';' : ',';
+        const separator = (linhaCabecalho.match(/;/g) || []).length > (linhaCabecalho.match(/,/g) || []).length ? ';' : ',';
 
         const parseCSVLine = (line) => {
-          let result = [];
-          let current = '';
-          let inQuotes = false;
+          let result = []; let current = ''; let inQuotes = false;
           for (let i = 0; i < line.length; i++) {
             let char = line[i];
             if (char === '"') {
-              if (inQuotes && line[i + 1] === '"') {
-                current += '"';
-                i++;
-              } else {
-                inQuotes = !inQuotes;
-              }
-            } else if (char === separator && !inQuotes) {
-              result.push(current);
-              current = '';
-            } else {
-              current += char;
-            }
+              if (inQuotes && line[i + 1] === '"') { current += '"'; i++; } else { inQuotes = !inQuotes; }
+            } else if (char === separator && !inQuotes) { result.push(current); current = ''; } else { current += char; }
           }
-          result.push(current);
-          return result.map(val => val.trim());
+          result.push(current); return result.map(val => val.trim());
         };
 
-        const headersRaw = parseCSVLine(linhaCabecalho);
-
-        const headersLimpos = headersRaw.map(h =>
-          h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "")
-        );
-
+        const headersLimpos = parseCSVLine(linhaCabecalho).map(h => h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, ""));
         const getIdx = (termo) => headersLimpos.indexOf(termo);
 
-        const idxLote = getIdx('lote');
+        const idxPosicao = getIdx('posicao'); 
+        const idxLote = getIdx('lote'); 
+        const idxRomaneio = getIdx('romaneio'); 
         const idxMaterial = getIdx('material');
-        const idxOrdem = getIdx('ordemproducao') !== -1 ? getIdx('ordemproducao') : getIdx('ordemproduao');
+        const idxDescricao = getIdx('descmaterial') !== -1 ? getIdx('descmaterial') : getIdx('descricao'); 
+        const idxQuantidade = getIdx('quantidade');
+        const idxPeso = getIdx('pesoliquido') !== -1 ? getIdx('pesoliquido') : getIdx('peso');
         const idxCliente = getIdx('cliente');
-        const idxNomeCliente = getIdx('nome');
-        const idxPesoLiquido = getIdx('pesoliquido');
+        const idxCidade = getIdx('cidade');
+        const idxNomeCliente = getIdx('nomecliente') !== -1 ? getIdx('nomecliente') : getIdx('nome');
+        const idxOrdem = getIdx('ordemproducao') !== -1 ? getIdx('ordemproducao') : getIdx('ossige');
+        const idxOrdemVenda = getIdx('ordemvenda');
+        const idxAgrupador = getIdx('agrupador');
         const idxLargura = getIdx('largura');
         const idxEspessura = getIdx('espessura');
         const idxDeposito = getIdx('deposito');
-        const idxDescricao = getIdx('descricao');
-        const idxOrdemVenda = getIdx('ordemvenda');
         const idxCentro = getIdx('centro');
+        const idxGondola = getIdx('gondola');
+        const idxGaveta = getIdx('gaveta');
 
-        if (idxLote === -1) {
-          abrirAlerta('Erro', 'A coluna "Lote" é obrigatória e não foi encontrada no arquivo.');
-          setCarregandoAcao(false);
-          return;
+        if (idxPosicao === -1 && idxRomaneio === -1 && idxLote === -1) { 
+          abrirAlerta('Erro', 'A planilha não possui as colunas esperadas ("Lote", "Posição" ou "Romaneio").'); 
+          setCarregandoAcao(false); 
+          return; 
         }
 
         let codigosExtraidos = [];
+
         for (let i = idxCabecalho + 1; i < linhas.length; i++) {
           const colunas = parseCSVLine(linhas[i]);
-          if (colunas.length > idxLote) {
-            const lote = colunas[idxLote];
-            if (lote && lote !== '') {
+          
+          const loteRaw = idxLote !== -1 ? colunas[idxLote] : null;
+          const posicaoRaw = idxPosicao !== -1 ? colunas[idxPosicao] : null;
+          const romaneioRaw = idxRomaneio !== -1 ? colunas[idxRomaneio] : null;
 
-              let filialLida = idxCentro !== -1 ? colunas[idxCentro] : null;
-              if (!filialLida || filialLida.trim() === '') {
-                filialLida = determinarFilial(lote);
-              }
+          const loteLimpo = loteRaw ? loteRaw.trim() : null;
+          const posicaoLimpa = posicaoRaw ? posicaoRaw.trim() : null;
+          const romaneioLimpo = removerZeros(romaneioRaw);
+          const materialLimpo = removerZeros(idxMaterial !== -1 ? colunas[idxMaterial] : null);
+          const clienteLimpo = removerZeros(idxCliente !== -1 ? colunas[idxCliente] : null);
+          const ordemProducaoLimpa = removerZeros(idxOrdem !== -1 ? colunas[idxOrdem] : null);
+          const ordemVendaLimpa = removerZeros(idxOrdemVenda !== -1 ? colunas[idxOrdemVenda] : null);
+          const agrupadorLimpo = removerZeros(idxAgrupador !== -1 ? colunas[idxAgrupador] : null);
 
-              codigosExtraidos.push({
-                lote: lote,
-                material: idxMaterial !== -1 ? colunas[idxMaterial] : null,
-                ordem_producao: idxOrdem !== -1 ? colunas[idxOrdem] : null,
-                cliente: idxCliente !== -1 ? colunas[idxCliente] : null,
-                nome_cliente: idxNomeCliente !== -1 ? colunas[idxNomeCliente] : null,
-                peso_liquido: idxPesoLiquido !== -1 ? colunas[idxPesoLiquido] : null,
-                largura: idxLargura !== -1 ? colunas[idxLargura] : null,
-                espessura: idxEspessura !== -1 ? colunas[idxEspessura] : null,
-                deposito: idxDeposito !== -1 ? colunas[idxDeposito] : null,
-                descricao: idxDescricao !== -1 ? colunas[idxDescricao] : null,
-                ordem_venda: idxOrdemVenda !== -1 ? colunas[idxOrdemVenda] : null,
-                filial: filialLida
-              });
-            }
+          let identificadorLote = loteLimpo;
+          if (!identificadorLote && posicaoLimpa && /(RA|MA|VA)\d+/i.test(posicaoLimpa)) {
+              identificadorLote = posicaoLimpa.match(/(RA|MA|VA)\d+/i)[0].toUpperCase();
+          } else if (!identificadorLote && posicaoLimpa && posicaoLimpa !== '') {
+              identificadorLote = posicaoLimpa;
+          }
+
+          const identificadorPrincipal = romaneioRaw ? romaneioRaw.trim() : (loteRaw ? loteRaw.trim() : null);
+
+          if (identificadorPrincipal) {
+            let filialLida = idxCentro !== -1 ? colunas[idxCentro] : null;
+            if (!filialLida || filialLida.trim() === '') filialLida = determinarFilial(identificadorPrincipal);
+
+            codigosExtraidos.push({
+              codigo: limparCodigo(identificadorPrincipal),
+              lote: loteLimpo ? limparCodigo(loteLimpo) : null,
+              romaneio: romaneioLimpo ? limparCodigo(romaneioLimpo) : null,
+              material: materialLimpo,
+              cliente: clienteLimpo,
+              nome_cliente: (idxNomeCliente !== -1 ? colunas[idxNomeCliente] : (idxCidade !== -1 ? colunas[idxCidade] : null)),
+              peso_liquido: idxPeso !== -1 ? colunas[idxPeso] : null,
+              descricao: idxDescricao !== -1 ? colunas[idxDescricao] : null,
+              ordem_producao: ordemProducaoLimpa,
+              ordem_venda: ordemVendaLimpa,
+              agrupador: agrupadorLimpo,
+              largura: idxLargura !== -1 ? colunas[idxLargura] : null,
+              espessura: idxEspessura !== -1 ? colunas[idxEspessura] : null,
+              deposito: idxDeposito !== -1 ? colunas[idxDeposito] : null,
+              gondola: idxGondola !== -1 ? colunas[idxGondola] : null,
+              posicao: idxGaveta !== -1 ? colunas[idxGaveta] : posicaoLimpa,
+              filial: filialLida
+            });
           }
         }
 
         const idSessaoAtiva = await garantirSessao();
-
+        
         const dadosParaBanco = codigosExtraidos.map(item => ({
-          sessao_id: idSessaoAtiva,
-          lote: item.lote,
-          material: limparValorParaBanco(item.material),
+          sessao_id: idSessaoAtiva, 
+          lote: item.lote, 
+          romaneio: item.romaneio, 
+          material: limparValorParaBanco(item.material), 
+          cliente: limparValorParaBanco(item.cliente), 
+          nome_cliente: limparValorParaBanco(item.nome_cliente), 
+          peso_liquido: limparNumeroParaBanco(item.peso_liquido), 
+          descricao: limparValorParaBanco(item.descricao), 
+          posicao: limparValorParaBanco(item.posicao),
           ordem_producao: limparValorParaBanco(item.ordem_producao),
-          cliente: limparValorParaBanco(item.cliente),
-          nome_cliente: limparValorParaBanco(item.nome_cliente),
-          peso_liquido: limparNumeroParaBanco(item.peso_liquido),
+          ordem_venda: limparValorParaBanco(item.ordem_venda),
+          agrupador: limparValorParaBanco(item.agrupador),
           largura: limparNumeroParaBanco(item.largura),
           espessura: limparNumeroParaBanco(item.espessura),
           deposito: limparValorParaBanco(item.deposito),
-          descricao: limparValorParaBanco(item.descricao),
-          ordem_venda: limparValorParaBanco(item.ordem_venda),
-          filial: limparValorParaBanco(item.filial)
+          gondola: limparValorParaBanco(item.gondola),
+          filial: limparValorParaBanco(item.filial),
+          rota: rotaAtual || null 
         }));
 
-        const { error } = await supabase.from('bobinas_sap').insert(dadosParaBanco);
-
-        if (error) {
-          throw error;
-        }
+        const { error: erroSap } = await supabase.from('bobinas_sap').insert(dadosParaBanco);
+        if (erroSap) console.warn("Aviso ao salvar base SAP:", erroSap);
 
         setCsvBobinas(codigosExtraidos);
-        abrirAlerta('Sucesso', `${codigosExtraidos.length} bobinas esperadas importadas e salvas no banco!`);
+        abrirAlerta('Sucesso', `Planilha importada! (${codigosExtraidos.length} itens processados)`);
 
       } catch (erro) {
-        console.error(erro);
-        abrirAlerta('Erro no Banco de Dados', erro.message || JSON.stringify(erro));
+        console.error(erro); abrirAlerta('Erro no Arquivo', erro.message || "Falha ao processar o CSV.");
       } finally {
         if (fileInputRef.current) fileInputRef.current.value = '';
         setCarregandoAcao(false);
@@ -437,17 +406,86 @@ function App() {
     reader.readAsText(file, 'ISO-8859-1');
   }
 
+  const processarEntradaMassa = (textoEntrada) => {
+    let itensExtraidos = [];
+    const linhas = textoEntrada.split(/[\r\n,]+/);
+
+    for (let linha of linhas) {
+      linha = linha.trim().toUpperCase();
+      if (!linha) continue;
+
+      let processouTags = false;
+
+      if (linha.includes('VL2LT')) {
+        const regexVL2LT = /VL2LT(.*?)KG/g;
+        let matchVL;
+        while ((matchVL = regexVL2LT.exec(linha)) !== null) {
+          itensExtraidos.push({ tipo: 'lote', valor: matchVL[1].trim() });
+          processouTags = true;
+        }
+      } 
+      
+      if (linha.includes('(7)') && linha.includes('(8)')) {
+        const regexRomaneio = /\(7\)(.*?)\(8\)/g;
+        let matchRom;
+        while ((matchRom = regexRomaneio.exec(linha)) !== null) {
+          itensExtraidos.push({ tipo: 'romaneio', valor: removerZeros(matchRom[1]) });
+          processouTags = true;
+        }
+      }
+
+      if (processouTags) continue;
+
+      const palavras = linha.split(/\s+/);
+      for (const palavra of palavras) {
+        if (!palavra) continue;
+
+        const valorLimpo = removerZeros(palavra);
+
+        const itemEncontrado = csvBobinas.find(c => 
+            removerZeros(c.lote) === valorLimpo || 
+            removerZeros(c.romaneio_original) === valorLimpo || 
+            removerZeros(c.agrupador) === valorLimpo
+        );
+
+        if (itemEncontrado) {
+            if (removerZeros(itemEncontrado.romaneio_original) === valorLimpo) {
+                itensExtraidos.push({ tipo: 'romaneio', valor: itemEncontrado.romaneio_original });
+            } else if (removerZeros(itemEncontrado.agrupador) === valorLimpo) {
+                const bobinasDoAgrupador = csvBobinas.filter(c => removerZeros(c.agrupador) === valorLimpo);
+                bobinasDoAgrupador.forEach(b => itensExtraidos.push({ tipo: 'lote', valor: b.lote }));
+            } else {
+                itensExtraidos.push({ tipo: 'lote', valor: itemEncontrado.lote });
+            }
+        } else {
+            itensExtraidos.push({ tipo: 'lote', valor: valorLimpo });
+        }
+      }
+    }
+    
+    const unicos = [];
+    const chaves = new Set();
+    itensExtraidos.forEach(item => {
+        const chave = `${item.tipo}-${item.valor}`;
+        if (!chaves.has(chave)) {
+            chaves.add(chave);
+            unicos.push(item);
+        }
+    });
+
+    return unicos;
+  };
+
+  // LEITURA DE BOBINA / ROMANEIO
   const adicionarBobina = async (codigoCopia = null) => {
     const textoLido = (typeof codigoCopia === 'string' ? codigoCopia : codigo).trim();
     if (!textoLido) return;
 
-    let lotesExtraidos = extrairLotesDoTexto(textoLido);
-    lotesExtraidos = [...new Set(lotesExtraidos)];
+    const itensExtraidos = processarEntradaMassa(textoLido);
 
-    if (lotesExtraidos.length === 0) {
-      abrirAlerta('Atenção', 'Não foi possível encontrar códigos válidos (RA, MA, VA) após a marcação VL2LT.');
-      setCodigo('');
-      return;
+    if (itensExtraidos.length === 0) {
+      abrirAlerta('Atenção', 'Nenhum código de Lote ou Romaneio válido foi reconhecido nesta leitura.');
+      setCodigo(''); return;
     }
 
     setCarregandoAcao(true);
@@ -455,408 +493,429 @@ function App() {
     try {
       const idSessaoAtiva = await garantirSessao();
       let listaAtualizada = [...bobinasLidas];
-
-      let lotesSucessoSAP = [];
+      let itensProcessadosMsg = [];
       let avisos = [];
+      let insercoesNoBanco = [];
 
-      for (const lote of lotesExtraidos) {
-        const loteLimpo = lote.trim();
-        if (!loteLimpo) continue;
+      for (const item of itensExtraidos) {
+        const codigoLimpo = limparCodigo(item.valor);
+        if (!codigoLimpo) continue;
 
-        if (listaAtualizada.some(b => b.codigo === loteLimpo)) {
-          avisos.push(`⚠️ A bobina ${loteLimpo} já foi lida.`);
-          continue;
+        const bobinaSAP = csvBobinas.find(c => 
+            limparCodigo(c.codigo) === codigoLimpo || 
+            limparCodigo(c.romaneio) === codigoLimpo
+        );
+        const identificadorFinal = bobinaSAP ? bobinaSAP.codigo : codigoLimpo;
+
+        if (listaAtualizada.some(b => b.codigo === identificadorFinal)) {
+            avisos.push(`⚠️ O item ${identificadorFinal} já foi lido.`); continue;
         }
 
-        const bobinaSAP = csvBobinas.find(c => c.lote === loteLimpo);
-        const filialMapeada = determinarFilial(loteLimpo) || (bobinaSAP ? bobinaSAP.filial : null);
-        const depositoEncontrado = bobinaSAP ? bobinaSAP.deposito : null;
+        const filialMapeada = determinarFilial(identificadorFinal) || (bobinaSAP ? bobinaSAP.filial : null);
+        const depositoAInserir = modoInventario === 'COM_ENDERECO' ? depositoAtual : (bobinaSAP ? bobinaSAP.deposito : null);
 
-        const { error } = await supabase
-          .from('bobinas_lidas')
-          .insert([{
-            sessao_id: idSessaoAtiva,
-            lote: loteLimpo,
-            cracha_leitura: crachaLogado,
-            filial: filialMapeada,
-            deposito: depositoEncontrado
-          }]);
+        let enderecoAInserir = null;
+        if (modoInventario === 'COM_ENDERECO') {
+          const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
+          if (depInfo && depInfo.requerEndereco) { 
+            enderecoAInserir = `Depósito: ${depositoAtual}${gondolaAtual.trim() ? ` | G: ${gondolaAtual}` : ''} | P: ${gavetaAtual}`; 
+          } else { 
+            enderecoAInserir = `Depósito: ${depositoAtual}`; 
+          }
+        }
 
-        if (error) throw error;
+        insercoesNoBanco.push({
+          sessao_id: idSessaoAtiva, 
+          lote: identificadorFinal, 
+          romaneio: bobinaSAP ? bobinaSAP.romaneio : null, 
+          cracha_leitura: crachaLogado,
+          filial: filialMapeada, 
+          deposito: depositoAInserir, 
+          endereco_lido: enderecoAInserir, 
+          rotas: rotaAtual || null
+        });
 
         if (bobinaSAP) {
-          lotesSucessoSAP.push(loteLimpo);
+            itensProcessadosMsg.push(`Registrado: ${identificadorFinal}`);
         } else {
-          avisos.push(`⚠️ Bobina ${loteLimpo} lida, mas NÃO está no SAP.`);
+            avisos.push(`⚠️ Adicionado ${identificadorFinal}, mas não consta na planilha SAP.`);
         }
 
-        const novaBobina = {
-          codigo: loteLimpo,
-          dataHora: new Date().toLocaleString('pt-BR'),
-          cracha: crachaLogado,
-          nome: nomeLogado,
-          filial: filialMapeada,
-          deposito: depositoEncontrado
-        };
-
-        listaAtualizada = [novaBobina, ...listaAtualizada];
+        listaAtualizada = [{
+          codigo: identificadorFinal, lote: identificadorFinal, romaneio: bobinaSAP ? bobinaSAP.romaneio : null, dataHora: new Date().toLocaleString('pt-BR'), cracha: crachaLogado,
+          nome: nomeLogado, filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rota: rotaAtual
+        }, ...listaAtualizada];
       }
 
-      setBobinasLidas(listaAtualizada);
+      if (insercoesNoBanco.length > 0) {
+          const { error } = await supabase.from('bobinas_lidas').insert(insercoesNoBanco);
+          if (error) throw error;
+          setBobinasLidas(listaAtualizada);
+      }
+      
       setCodigo('');
       setUsandoCamera(false);
 
-      if (lotesSucessoSAP.length > 0 && avisos.length === 0) {
-        abrirAlerta(
-          '✅ Leitura OK!',
-          `${lotesSucessoSAP.length} bobina(s) validada(s):\n${lotesSucessoSAP.join(', ')}`
-        );
-      } else if (avisos.length > 0) {
-        abrirAlerta('Atenção na Leitura', avisos.join('\n\n'));
+      if (itensProcessadosMsg.length > 0 && avisos.length === 0) {
+        abrirAlerta('✅ Processamento OK!', `${itensProcessadosMsg.join('\n')}`);
+      } else if (avisos.length > 0 || itensProcessadosMsg.length > 0) {
+        const sucessoTxt = itensProcessadosMsg.length > 0 ? `Lidos:\n${itensProcessadosMsg.join('\n')}\n\n` : '';
+        const alertaText = avisos.length > 5 ? `${avisos.slice(0, 5).join('\n')}\n...e mais ${avisos.length - 5} avisos.` : avisos.join('\n');
+        abrirAlerta('Resumo da Leitura', sucessoTxt + alertaText);
       }
-
     } catch (erro) {
-      console.error(erro);
-      abrirAlerta('Erro', 'Falha ao salvar a leitura no banco de dados.');
-    } finally {
-      setCarregandoAcao(false);
-    }
+      console.error(erro); abrirAlerta('Erro', 'Falha ao salvar a leitura no banco de dados.');
+    } finally { setCarregandoAcao(false); }
   }
 
   const processarLoteDrone = async (arrayDeTextosLidos) => {
     setUsandoDrone(false);
-    if (arrayDeTextosLidos.length === 0) {
-      abrirAlerta('Resultado do Drone', 'Nenhum QR Code válido foi encontrado no vídeo.');
-      return;
-    }
+    if (arrayDeTextosLidos.length === 0) { abrirAlerta('Resultado', 'Nenhum código lido.'); return; }
 
     setCarregandoAcao(true);
     let lotesFormatados = [];
 
     arrayDeTextosLidos.forEach(texto => {
-      const matches = extrairLotesDoTexto(texto);
-      if (matches.length > 0) {
-        lotesFormatados.push(...matches);
-      }
+      const matches = processarEntradaMassa(texto);
+      if (matches.length > 0) lotesFormatados.push(...matches.map(m => m.valor));
     });
 
     lotesFormatados = [...new Set(lotesFormatados)];
-
-    if (lotesFormatados.length === 0) {
-      setCarregandoAcao(false);
-      abrirAlerta('Atenção', 'Não foram encontrados códigos válidos após a marcação VL2LT no vídeo.');
-      return;
-    }
+    if (lotesFormatados.length === 0) { setCarregandoAcao(false); abrirAlerta('Atenção', 'Códigos inválidos capturados pelo drone.'); return; }
 
     try {
       const idSessaoAtiva = await garantirSessao();
       let listaAtualizada = [...bobinasLidas];
       let insercoesNoBanco = [];
 
+      let enderecoAInserir = null;
+      if (modoInventario === 'COM_ENDERECO') {
+        const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
+        if (depInfo && depInfo.requerEndereco) {
+          enderecoAInserir = `Depósito: ${depositoAtual} | G: ${gondolaAtual} | P: ${gavetaAtual}`;
+        } else {
+          enderecoAInserir = `Depósito: ${depositoAtual}`;
+        }
+      }
+
       for (const lote of lotesFormatados) {
-        if (!lote || listaAtualizada.some(b => b.codigo === lote)) continue;
+        if (!lote) continue;
+        
+        const bobinaSAP = csvBobinas.find(c => c.codigo === lote || c.romaneio === lote);
+        const identificadorFinal = bobinaSAP ? bobinaSAP.codigo : lote;
 
-        const bobinaSAP = csvBobinas.find(c => c.lote === lote);
-        const filialMapeada = determinarFilial(lote) || (bobinaSAP ? bobinaSAP.filial : null);
-        const depositoEncontrado = bobinaSAP ? bobinaSAP.deposito : null;
+        if (listaAtualizada.some(b => b.codigo === identificadorFinal)) continue;
+        
+        const filialMapeada = determinarFilial(identificadorFinal) || (bobinaSAP ? bobinaSAP.filial : null);
+        const depositoAInserir = modoInventario === 'COM_ENDERECO' ? depositoAtual : (bobinaSAP ? bobinaSAP.deposito : null);
 
-        const novaBobina = {
-          codigo: lote,
-          dataHora: new Date().toLocaleString('pt-BR'),
-          cracha: crachaLogado,
-          nome: nomeLogado,
-          filial: filialMapeada,
-          deposito: depositoEncontrado
-        };
-        listaAtualizada = [novaBobina, ...listaAtualizada];
+        listaAtualizada = [{
+          codigo: identificadorFinal, 
+          lote: identificadorFinal,
+          romaneio: bobinaSAP ? bobinaSAP.romaneio : null,
+          dataHora: new Date().toLocaleString('pt-BR'), cracha: crachaLogado, nome: nomeLogado,
+          filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rota: rotaAtual
+        }, ...listaAtualizada];
 
         insercoesNoBanco.push({
-          sessao_id: idSessaoAtiva,
-          lote: lote,
+          sessao_id: idSessaoAtiva, 
+          lote: identificadorFinal, 
+          romaneio: bobinaSAP ? bobinaSAP.romaneio : null,
           cracha_leitura: crachaLogado,
-          filial: filialMapeada,
-          deposito: depositoEncontrado
+          filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rotas: rotaAtual || null
         });
       }
 
-      if (insercoesNoBanco.length > 0) {
-        const { error } = await supabase.from('bobinas_lidas').insert(insercoesNoBanco);
-        if (error) throw error;
-      }
-
+      if (insercoesNoBanco.length > 0) await supabase.from('bobinas_lidas').insert(insercoesNoBanco);
       setBobinasLidas(listaAtualizada);
-      abrirAlerta('Missão do Drone Concluída!', `Foram processados e inseridos ${insercoesNoBanco.length} novos lotes únicos no sistema com sucesso.`);
-    } catch (erro) {
-      abrirAlerta('Erro', 'Ocorreu um problema ao salvar os dados do drone.');
-    } finally {
-      setCarregandoAcao(false);
-    }
+      abrirAlerta('Missão do Drone Concluída!', `Processados e inseridos ${insercoesNoBanco.length} novos itens.`);
+    } catch (erro) { abrirAlerta('Erro', 'Ocorreu um problema ao salvar os dados do drone.'); } finally { setCarregandoAcao(false); }
   };
 
   const removerBobina = async (codigoParaRemover) => {
     setCarregandoAcao(true);
-
     try {
-      if (sessaoId) {
-        const { error } = await supabase
-          .from('bobinas_lidas')
-          .delete()
-          .eq('sessao_id', sessaoId)
-          .eq('lote', codigoParaRemover);
-
-        if (error) throw error;
-      }
-
-      const novaLista = bobinasLidas.filter(b => b.codigo !== codigoParaRemover);
-      setBobinasLidas(novaLista);
-
-    } catch (erro) {
-      console.error(erro);
-      abrirAlerta('Erro', 'Falha ao excluir a bobina do banco de dados.');
-    } finally {
-      setCarregandoAcao(false);
-    }
+      if (sessaoId) await supabase.from('bobinas_lidas').delete().eq('sessao_id', sessaoId).eq('lote', codigoParaRemover);
+      setBobinasLidas(bobinasLidas.filter(b => b.codigo !== codigoParaRemover));
+    } catch (erro) { abrirAlerta('Erro', 'Falha ao excluir.'); } finally { setCarregandoAcao(false); }
   }
 
   const limparDados = () => {
-    abrirConfirmacao('Limpar Tela', 'Deseja limpar os dados da tela e iniciar uma nova contagem? (Os dados antigos permanecerão salvos no banco).', () => {
-      setBobinasLidas([]);
-      setCsvBobinas([]);
-      setSessaoId(null);
+    abrirConfirmacao('Limpar Tela', 'Deseja limpar os dados da tela e iniciar uma nova contagem?', () => {
+      setBobinasLidas([]); setCsvBobinas([]); setSessaoId(null); setEtapaInventario('OCIOSO'); setModoInventario(null);
+      setDepositoAtual(''); setGondolaAtual(''); setGavetaAtual('');
     });
   }
 
+  const avancarParaInformarEndereco = () => {
+    if (!depositoAtual) { abrirAlerta('Atenção', 'Por favor, selecione um Depósito.'); return; }
+    const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
+    if (depInfo && depInfo.requerEndereco) {
+      if (!gavetaAtual.trim()) { abrirAlerta('Atenção', 'Para este depósito, é obrigatório preencher a Gaveta/Posição.'); return; }
+    }
+    setEtapaInventario('BIPANDO');
+  };
+
+  const finalizarGaveta = () => {
+    const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
+
+    if (depInfo && depInfo.requerEndereco) {
+      abrirConfirmacao('Gaveta Finalizada', `Deseja ir para a próxima gaveta (mantendo Rota, Depósito e Gôndola) ou finalizar?`, () => {
+        setGavetaAtual(''); setEtapaInventario('INFORMAR_ENDERECO');
+      }, 'Próxima Gaveta', 'Encerrar Tudo');
+    } else {
+      abrirConfirmacao('Depósito Finalizado', `Deseja inventariar outro depósito ou finalizar?`, () => {
+        setDepositoAtual(''); setGondolaAtual(''); setGavetaAtual(''); setEtapaInventario('INFORMAR_ENDERECO');
+      }, 'Outro Depósito', 'Encerrar Tudo');
+    }
+
+    setModal(prev => ({ ...prev, onCancel: () => { setEtapaInventario('OCIOSO'); setModoInventario(null); setDepositoAtual(''); setGondolaAtual(''); setGavetaAtual(''); fecharModal(); } }));
+  };
+
+  const encerrarInventarioLivre = () => {
+    abrirConfirmacao('Encerrar', 'Deseja parar de bipar e voltar ao início?', () => { setEtapaInventario('OCIOSO'); setModoInventario(null); setDepositoAtual(''); });
+  };
+
+  // AUDITORIA E RELATÓRIO COM VALIDAÇÃO INTELIGENTE
   const obterRelatorioConciliado = () => {
     const lidasCodes = bobinasLidas.map(b => b.codigo);
     let relatorio = [];
 
     bobinasLidas.forEach(b => {
-      const bobinaSAP = csvBobinas.find(c => c.lote === b.codigo);
+      const bobinaSAP = csvBobinas.find(c => c.codigo === b.codigo);
       const isOk = !!bobinaSAP;
-
       const filialFinal = b.filial || (bobinaSAP ? bobinaSAP.filial : null) || determinarFilial(b.codigo) || '-';
 
+      const endereco_sap_formatado = formatarEnderecoSAP(bobinaSAP);
+      const endereco_lido = b.endereco_lido || '-';
+
+      // Pega o nome da Rota que o operador escolheu
+      const idRotaSalvo = b.rotas || b.rota;
+      const nomeRota = rotasDisponiveis.find(r => String(r.id) === String(idRotaSalvo))?.rota || idRotaSalvo || '-';
+
+      let statusFinal = ''; let tipoFinal = '';
+      if (csvBobinas.length === 0) { statusFinal = 'Bipada (Sem SAP base)'; tipoFinal = 'sobrando'; }
+      else if (!isOk) { statusFinal = 'Sobrando (Não SAP)'; tipoFinal = 'sobrando'; }
+      else {
+        
+        // VALIDAÇÃO 1: Checa se é exatamente igual (Padrão)
+        let enderecoCorreto = (endereco_lido === endereco_sap_formatado);
+
+        // VALIDAÇÃO 2: Inteligência Cruzando [Rota]-[Gaveta] com a posição SAP
+        if (!enderecoCorreto && endereco_lido !== '-' && endereco_sap_formatado !== '-') {
+            // Extrai a gaveta da string. Ex: "Depósito: 9000 | G: A | P: 04C" -> pega o "04C"
+            const matchGaveta = endereco_lido.match(/\|\s*P:\s*([^|]+)/);
+            
+            if (matchGaveta && nomeRota !== '-') {
+                const gavetaExtraida = matchGaveta[1].trim();
+                
+                // Constrói a posição simulando como o SAP faz: "Posição: R04D-04C"
+                const posicaoCombinada = `Posição: ${nomeRota}-${gavetaExtraida}`;
+                
+                if (posicaoCombinada === endereco_sap_formatado) {
+                    enderecoCorreto = true;
+                }
+            }
+        }
+
+        if (endereco_lido !== '-' && endereco_sap_formatado !== '-' && !enderecoCorreto) {
+          statusFinal = 'Local Incorreto'; tipoFinal = 'divergencia';
+        } else { 
+          statusFinal = 'OK (Lida)'; tipoFinal = 'ok'; 
+        }
+      }
+
       relatorio.push({
-        codigo: b.codigo,
-        status: csvBobinas.length === 0 ? 'Bipada (Sem SAP)' : (isOk ? 'OK (Lida)' : 'Não Consta no SAP'),
-        dataHora: b.dataHora,
-        cracha: b.cracha,
-        nome_operador: b.nome,
-        filial: filialFinal,
-        deposito: b.deposito || (bobinaSAP ? (bobinaSAP.deposito || '-') : '-'),
-        material: bobinaSAP ? bobinaSAP.material : '-',
-        descricao: bobinaSAP ? bobinaSAP.descricao : '-',
-        peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-',
-        largura: bobinaSAP ? bobinaSAP.largura : '-',
-        espessura: bobinaSAP ? bobinaSAP.espessura : '-',
-        ordem_producao: bobinaSAP ? bobinaSAP.ordem_producao : '-',
-        ordem_venda: bobinaSAP ? bobinaSAP.ordem_venda : '-',
-        cliente: bobinaSAP ? bobinaSAP.cliente : '-',
-        nome_cliente: bobinaSAP ? bobinaSAP.nome_cliente : '-',
-        tipo: isOk ? 'ok' : 'sobrando'
+        codigo: b.codigo, status: statusFinal, dataHora: b.dataHora, cracha: b.cracha, nome_operador: b.nome, filial: filialFinal,
+        lote: b.lote || b.codigo, romaneio: b.romaneio || (bobinaSAP ? bobinaSAP.romaneio : '-'),
+        deposito: b.deposito || (bobinaSAP ? (bobinaSAP.deposito || '-') : '-'), agrupador: bobinaSAP ? bobinaSAP.agrupador : '-',
+        endereco_lido: endereco_lido, endereco_sap: endereco_sap_formatado, material: bobinaSAP ? bobinaSAP.material : '-',
+        descricao: bobinaSAP ? bobinaSAP.descricao : '-', peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-',
+        largura: bobinaSAP ? bobinaSAP.largura : '-', espessura: bobinaSAP ? bobinaSAP.espessura : '-',
+        ordem_producao: bobinaSAP ? bobinaSAP.ordem_producao : '-', ordem_venda: bobinaSAP ? bobinaSAP.ordem_venda : '-',
+        cliente: bobinaSAP ? bobinaSAP.cliente : '-', nome_cliente: bobinaSAP ? bobinaSAP.nome_cliente : '-', 
+        rota: nomeRota, 
+        tipo: tipoFinal
       });
     });
 
     csvBobinas.forEach(c => {
-      if (!lidasCodes.includes(c.lote)) {
-
-        const filialFinal = c.filial || determinarFilial(c.lote) || '-';
-
+      if (!lidasCodes.includes(c.codigo)) {
+        const filialFinal = c.filial || determinarFilial(c.codigo) || '-';
+        const endereco_sap_formatado = formatarEnderecoSAP(c);
         relatorio.push({
-          codigo: c.lote,
-          status: 'Faltando (Não Bipada)',
-          dataHora: '-',
-          cracha: '-',
-          nome_operador: '-',
-          filial: filialFinal,
-          deposito: c.deposito || '-',
-          material: c.material || '-',
-          descricao: c.descricao || '-',
-          peso_liquido: c.peso_liquido || '-',
-          largura: c.largura || '-',
-          espessura: c.espessura || '-',
-          ordem_producao: c.ordem_producao || '-',
-          ordem_venda: c.ordem_venda || '-',
-          cliente: c.cliente || '-',
-          nome_cliente: c.nome_cliente || '-',
+          codigo: c.codigo, status: 'Faltando (Não Bipada)', dataHora: '-', cracha: '-', nome_operador: '-', filial: filialFinal,
+          lote: c.lote || c.codigo, romaneio: c.romaneio || '-',
+          deposito: c.deposito || '-', agrupador: c.agrupador || '-', endereco_lido: '-', endereco_sap: endereco_sap_formatado,
+          material: c.material || '-', descricao: c.descricao || '-', peso_liquido: c.peso_liquido || '-', largura: c.largura || '-',
+          espessura: c.espessura || '-', ordem_producao: c.ordem_producao || '-', ordem_venda: c.ordem_venda || '-',
+          cliente: c.cliente || '-', nome_cliente: c.nome_cliente || '-', 
+          rota: '-', 
           tipo: 'faltando'
         });
       }
     });
-
     return relatorio;
   }
 
   const gerarRelatorio = () => {
     const dados = obterRelatorioConciliado();
-    if (dados.length === 0) {
-      abrirAlerta('Vazio', 'Sem dados para gerar relatório.');
-      return;
-    }
-
+    if (dados.length === 0) { abrirAlerta('Vazio', 'Sem dados para gerar relatório.'); return; }
     const limparParaCSV = (val) => {
-      if (val === '-' || !val) return '-';
-      let str = String(val);
-      if (str.includes(';') || str.includes(',')) return `"${str}"`;
-      return str;
+      if (val === '-' || !val) return '-'; let str = String(val); if (str.includes(';') || str.includes(',')) return `"${str}"`; return str;
     };
-
-    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote;Material;Descricao;Filial;Deposito;Ordem Producao;Ordem Venda;Cliente;Nome Cliente;Peso Liquido;Largura;Espessura;Status;Data e Hora Leitura;Operador;Cracha\n"
-      + dados.map(e => `${limparParaCSV(e.codigo)};${limparParaCSV(e.material)};${limparParaCSV(e.descricao)};${limparParaCSV(e.filial)};${limparParaCSV(e.deposito)};${limparParaCSV(e.ordem_producao)};${limparParaCSV(e.ordem_venda)};${limparParaCSV(e.cliente)};${limparParaCSV(e.nome_cliente)};${limparParaCSV(e.peso_liquido)};${limparParaCSV(e.largura)};${limparParaCSV(e.espessura)};${limparParaCSV(e.status)};${limparParaCSV(e.dataHora)};${limparParaCSV(e.nome_operador)};${limparParaCSV(e.cracha)}`).join("\n");
-
-    const link = document.createElement("a");
-    link.href = encodeURI(csvContent);
-    link.download = `relatorio_inventario_${new Date().getTime()}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote/Posicao;Romaneio;Material;Descricao;Filial;Deposito;Endereco Lido;Endereco SAP;Peso Liquido;Status;Rota;Data e Hora Leitura;Operador;Cracha\n"
+      + dados.map(e => `${limparParaCSV(e.lote)};${limparParaCSV(e.romaneio)};${limparParaCSV(e.material)};${limparParaCSV(e.descricao)};${limparParaCSV(e.filial)};${limparParaCSV(e.deposito)};${limparParaCSV(e.endereco_lido)};${limparParaCSV(e.endereco_sap)};${limparParaCSV(e.peso_liquido)};${limparParaCSV(e.status)};${limparParaCSV(e.rota)};${limparParaCSV(e.dataHora)};${limparParaCSV(e.nome_operador)};${limparParaCSV(e.cracha)}`).join("\n");
+    
+    const link = document.createElement("a"); link.href = encodeURI(csvContent); link.download = `relatorio_inventario_${new Date().getTime()}.csv`;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
   }
 
   const relatorioNaTela = obterRelatorioConciliado();
-  const qtdLidas = bobinasLidas.length;
-  const qtdEsperadas = csvBobinas.length;
-  const qtdFaltam = Math.max(0, qtdEsperadas - bobinasLidas.filter(b => csvBobinas.some(c => c.lote === b.codigo)).length);
+  const qtdLidas = bobinasLidas.length; const qtdEsperadas = csvBobinas.length;
+  const qtdFaltam = Math.max(0, qtdEsperadas - bobinasLidas.filter(b => csvBobinas.some(c => c.codigo === b.codigo)).length);
 
-  if (!crachaLogado) {
+  const leiturasProcessadas = leiturasGlobais.filter(l => {
+    if (conferenciaFilters.lote && !l.codigo.includes(conferenciaFilters.lote) && (!l.romaneio || !l.romaneio.includes(conferenciaFilters.lote))) return false;
+    if (conferenciaFilters.filial && l.filial !== conferenciaFilters.filial) return false;
+    if (conferenciaFilters.deposito && l.deposito !== conferenciaFilters.deposito) return false;
+    return true;
+  }).sort((a, b) => {
+    return new Date(b.dataHora.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3-$2-$1')) - new Date(a.dataHora.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3-$2-$1'));
+  });
+
+  const totalPaginas = Math.ceil(leiturasProcessadas.length / ITENS_POR_PAGINA) || 1;
+  const paginaCorrigida = Math.min(paginaAtual, totalPaginas);
+  const leiturasPaginadas = leiturasProcessadas.slice((paginaCorrigida - 1) * ITENS_POR_PAGINA, paginaCorrigida * ITENS_POR_PAGINA);
+
+  // IDENTIFICA A ROTA ATUAL PARA EXIBIÇÃO NO CABEÇALHO DE LEITURA ATIVA
+  const nomeRotaAtiva = rotasDisponiveis.find(r => String(r.id) === String(rotaAtual))?.rota;
+
+    if (!crachaLogado) {
     return (
-      <div className="min-vh-100 bg-light d-flex justify-content-center align-items-center position-relative px-3 py-4">
+      <div className="min-vh-100 d-flex justify-content-center align-items-center position-relative px-3 py-4" style={{ backgroundColor: '#f4f6f8' }}>
+
         {modal.show && (
           <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
             <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
-              <div className="modal-content shadow border-0">
-                <div className="modal-header border-0 bg-dark text-white">
-                  <h5 className="modal-title fw-bold">Aviso</h5>
+              <div className="modal-content shadow-lg border-0" style={{ borderRadius: '16px', overflow: 'hidden' }}>
+                <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`}>
+                  <h5 className="modal-title fw-bold fs-6">Aviso</h5>
                   <button type="button" className="btn-close btn-close-white" onClick={fecharModal}></button>
                 </div>
                 <div className="modal-body p-4 fs-6 text-secondary text-center">
                   <p className="mb-0">{modal.message}</p>
                 </div>
                 <div className="modal-footer border-0 justify-content-center pb-4">
-                  <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto" onClick={fecharModal}>Fechar</button>
+                  <button type="button" className="vp-btn vp-btn-dark w-100 w-sm-auto" onClick={fecharModal}>Fechar</button>
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        <div className="card shadow-lg border-0 p-4 p-md-5 w-100" style={{ maxWidth: '450px', borderRadius: '12px' }}>
-          <div className="text-center mb-4 mb-md-5">
-            <img src={logoVideplast} alt="Videplast" className="img-fluid mb-4 logo-videplast-login" />
-            <h4 className="fw-bold text-dark fs-5 fs-md-4">Videplast</h4>
-            <p className="text-muted small mb-0">Controle de Estoque Videplast</p>
-          </div>
+        <div className="card w-100 shadow-lg border-0 animate__animated animate__fadeInUp animate__faster"
+          style={{
+            maxWidth: '400px',
+            borderRadius: '16px',
+            overflow: 'hidden'
+          }}>
 
-          <div className="mb-4">
-            <label className="form-label text-secondary fw-semibold small">Número do seu Crachá</label>
-            <input
-              type="number"
-              className="form-control form-control-lg bg-light fs-6"
-              placeholder="Ex: 123456"
-              value={inputCracha}
-              onChange={e => setInputCracha(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !carregandoLogin && fazerLogin()}
-              autoFocus
-              disabled={carregandoLogin}
-            />
-          </div>
+          <div style={{ height: '6px', width: '100%', backgroundColor: 'var(--vp-primary)' }}></div>
 
-          <button
-            className="btn btn-primary btn-lg w-100 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2"
-            onClick={fazerLogin}
-            disabled={carregandoLogin}
-            style={{ backgroundColor: '#e20909ff', border: 'none', fontSize: '1rem' }}
-          >
-            {carregandoLogin ? (
-              <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Validando...</>
-            ) : 'Entrar no Sistema'}
-          </button>
+          <div className="card-body p-4 p-sm-5 pt-4">
+
+            <div className="text-center mb-4 pb-2">
+              <img
+                src={logoVideplast}
+                alt="Videplast"
+                className="img-fluid mb-4"
+                style={{ maxHeight: '55px', objectFit: 'contain' }}
+              />
+              <h4 className="fw-bold mb-2" style={{ color: '#1e293b', fontSize: '1.25rem' }}>
+                Acesso ao Sistema
+              </h4>
+              <div className="mt-3">
+                <span className="badge bg-light text-secondary border px-3 py-2 rounded-pill fw-semibold shadow-sm" style={{ letterSpacing: '0.3px', fontSize: '0.8rem' }}>
+                  <i className="bi bi-box-seam me-1 text-danger"></i> Controle de Estoque
+                </span>
+              </div>
+            </div>
+
+            <div className="mb-4 text-start">
+              <label className="form-label fw-bold small mb-2 text-muted text-uppercase" style={{ letterSpacing: '0.5px', fontSize: '0.75rem' }}>
+                Credencial do Operador
+              </label>
+
+              <div
+                className="d-flex align-items-center w-100 bg-white shadow-sm"
+                style={{
+                  borderRadius: '10px',
+                  height: '54px',
+                  border: '1px solid #ced4da',
+                  transition: 'border-color 0.2s ease',
+                  overflow: 'hidden'
+                }}
+              >
+                <div className="d-flex justify-content-center align-items-center text-secondary" style={{ width: '48px', height: '100%' }}>
+                  <i className="bi bi-person-badge fs-5"></i>
+                </div>
+                <input
+                  type="number"
+                  className="w-100 h-100 border-0"
+                  placeholder="Nº do Crachá"
+                  value={inputCracha}
+                  onChange={e => setInputCracha(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !carregandoLogin && inputCracha.trim() !== '' && fazerLogin()}
+                  autoFocus
+                  disabled={carregandoLogin}
+                  style={{
+                    fontSize: '1.05rem',
+                    fontWeight: '600',
+                    letterSpacing: '1px',
+                    paddingLeft: '0',
+                    backgroundColor: 'transparent',
+                    outline: 'none',
+                    boxShadow: 'none'
+                  }}
+                  onFocus={(e) => e.target.parentElement.style.borderColor = 'var(--vp-primary)'}
+                  onBlur={(e) => e.target.parentElement.style.borderColor = '#ced4da'}
+                />
+              </div>
+            </div>
+            <button
+              className="btn w-100 shadow-sm d-flex justify-content-center align-items-center gap-2"
+              onClick={fazerLogin}
+              disabled={carregandoLogin || inputCracha.trim() === ''}
+              style={{
+                backgroundColor: 'var(--vp-primary)',
+                color: 'white',
+                height: '54px',
+                borderRadius: '10px',
+                fontSize: '1rem',
+                fontWeight: '700',
+                border: 'none',
+                transition: 'transform 0.2s ease',
+                cursor: (carregandoLogin || inputCracha.trim() === '') ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {carregandoLogin ? (
+                <><span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Autenticando...</>
+              ) : (
+                <>Entrar na Sessão <i className="bi bi-arrow-right-short fs-4"></i></>
+              )}
+            </button>
+            <div className="text-center mt-4 pt-3 border-top">
+              <small className="text-muted fw-semibold" style={{ fontSize: '0.75rem' }}>
+                <i className="bi bi-shield-check me-1"></i> Ambiente Seguro
+              </small>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
-
-  // PROCESSAMENTO DE DADOS E FILTRAGEM
-  let leiturasProcessadas = isAdmin
-    ? leiturasGlobais
-    : bobinasLidas.map(b => {
-      const bSap = csvBobinas.find(c => c.lote === b.codigo);
-      const filialFinal = b.filial || (bSap ? bSap.filial : null) || determinarFilial(b.codigo) || '-';
-
-      return {
-        ...b,
-        codigo: b.codigo,
-        filial: filialFinal,
-        deposito: b.deposito || (bSap ? (bSap.deposito || '-') : '-'),
-        material: bSap ? (bSap.material || '-') : '-',
-        descricao: bSap ? (bSap.descricao || '-') : '-',
-        peso_liquido: bSap ? (bSap.peso_liquido || '-') : '-',
-        largura: bSap ? (bSap.largura || '-') : '-',
-        espessura: bSap ? (bSap.espessura || '-') : '-',
-        ordem_producao: bSap ? (bSap.ordem_producao || '-') : '-',
-        ordem_venda: bSap ? (bSap.ordem_venda || '-') : '-',
-        cliente: bSap ? (bSap.cliente || '-') : '-',
-        nome_cliente: bSap ? (bSap.nome_cliente || '-') : '-'
-      };
-    });
-
-  if (conferenciaFilters.lote) {
-    leiturasProcessadas = leiturasProcessadas.filter(b =>
-      b.codigo.toLowerCase().includes(conferenciaFilters.lote.toLowerCase())
-    );
-  }
-
-  if (conferenciaFilters.data_leitura) {
-    leiturasProcessadas = leiturasProcessadas.filter(b =>
-      b.dataHora.includes(conferenciaFilters.data_leitura)
-    );
-  }
-
-  if (conferenciaFilters.filial) {
-    leiturasProcessadas = leiturasProcessadas.filter(b =>
-      String(b.filial) === conferenciaFilters.filial
-    );
-  }
-
-  if (conferenciaFilters.deposito) {
-    leiturasProcessadas = leiturasProcessadas.filter(b =>
-      String(b.deposito).toUpperCase().includes(conferenciaFilters.deposito.toUpperCase())
-    );
-  }
-
-  // LÓGICA DE ORDENAÇÃO
-  leiturasProcessadas.sort((a, b) => {
-    if (conferenciaSort.field === 'Lote') {
-      const valA = a.codigo || '';
-      const valB = b.codigo || '';
-      if (valA < valB) return conferenciaSort.order === 'asc' ? -1 : 1;
-      if (valA > valB) return conferenciaSort.order === 'asc' ? 1 : -1;
-      return 0;
-    } else {
-      const converterParaData = (dataStr) => {
-        if (!dataStr || dataStr === '-') return 0;
-        const partes = dataStr.match(/\d+/g);
-        if (partes && partes.length >= 3) {
-          const [dia, mes, ano, hora, min, sec] = partes;
-          return new Date(ano, mes - 1, dia, hora || 0, min || 0, sec || 0).getTime();
-        }
-        return 0;
-      };
-
-      const tempoA = converterParaData(a.dataHora);
-      const tempoB = converterParaData(b.dataHora);
-
-      if (tempoA < tempoB) return conferenciaSort.order === 'asc' ? -1 : 1;
-      if (tempoA > tempoB) return conferenciaSort.order === 'asc' ? 1 : -1;
-      return 0;
-    }
-  });
-
-  // LÓGICA DE PAGINAÇÃO
-  const totalPaginas = Math.ceil(leiturasProcessadas.length / ITENS_POR_PAGINA) || 1;
-  const paginaCorrigida = Math.min(paginaAtual, totalPaginas);
-  const indexUltimoItem = paginaCorrigida * ITENS_POR_PAGINA;
-  const indexPrimeiroItem = indexUltimoItem - ITENS_POR_PAGINA;
-  const leiturasPaginadas = leiturasProcessadas.slice(indexPrimeiroItem, indexUltimoItem);
 
   return (
     <div className="min-vh-100 bg-light d-flex flex-column justify-content-top align-items-center position-relative pb-5">
@@ -864,146 +923,56 @@ function App() {
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
             <div className="modal-content shadow border-0" style={{ borderRadius: '8px', overflow: 'hidden' }}>
-              <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`}>
-                <h5 className="modal-title fw-bold fs-6">
-                  {modal.type === 'confirm' && <i className="bi bi-exclamation-triangle-fill me-2"></i>}
-                  {modal.title}
-                </h5>
-                <button type="button" className="btn-close btn-close-white" onClick={fecharModal}></button>
-              </div>
-              <div className="modal-body p-4 fs-6 text-secondary text-center">
-                <p className="mb-0">{modal.message}</p>
-              </div>
-              <div className="modal-footer border-0 justify-content-center pb-4 flex-column flex-sm-row gap-2">
-                <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto m-0" onClick={fecharModal}>
-                  {modal.type === 'confirm' ? 'Cancelar' : 'Fechar'}
-                </button>
-                {modal.type === 'confirm' && (
-                  <button type="button" className="btn btn-danger px-4 w-100 w-sm-auto m-0" onClick={modal.onConfirm}>Sim</button>
-                )}
-              </div>
+              <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`}><h5 className="modal-title fw-bold fs-6">{modal.type === 'confirm' && <i className="bi bi-exclamation-triangle-fill me-2"></i>}{modal.title}</h5><button type="button" className="btn-close btn-close-white" onClick={modal.onCancel || fecharModal}></button></div>
+              <div className="modal-body p-4 fs-6 text-secondary text-center"><p className="mb-0">{modal.message}</p></div>
+              <div className="modal-footer border-0 justify-content-center pb-4 flex-column flex-sm-row gap-2"><button type="button" className="vp-btn vp-btn-outline w-100 w-sm-auto m-0" onClick={modal.onCancel || fecharModal}>{modal.cancelText || 'Fechar'}</button>{modal.type === 'confirm' && (<button type="button" className="vp-btn vp-btn-danger w-100 w-sm-auto m-0" onClick={modal.onConfirm}>{modal.confirmText || 'Sim'}</button>)}</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL DE CONFERÊNCIA */}
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
-            <div className="modal-content shadow border-0" style={{ borderRadius: '8px', overflow: 'hidden' }}>
-              <div className="modal-header border-0 bg-dark text-white">
-                <h5 className="modal-title fw-bold fs-6">
-                  Conferência de Leituras (Histórico Geral)
-                </h5>
-                <button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button>
-              </div>
+            <div className="modal-content shadow border-0">
+              <div className="modal-header border-0 bg-dark text-white"><h5 className="modal-title fw-bold fs-6">Conferência de Leituras</h5><button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button></div>
               <div className="modal-body p-4 fs-6 text-secondary">
-                <p className="mb-2 text-center">
-                  Operador responsável: <strong className="text-danger">{crachaLogado}</strong>
-                  <br />
-                  <span className="small text-muted">Exibindo {leiturasProcessadas.length} resultados encontrados.</span>
-                </p>
-
-                <FilterControls
-                  filters={conferenciaFilters}
-                  onFilterChange={setConferenciaFilters}
-                  onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '' })}
-                  sortConfig={conferenciaSort}
-                  onSortChange={setConferenciaSort}
-                  itemsCount={leiturasProcessadas.length}
-                />
-
+                <p className="mb-2 text-center">Operador: <strong className="text-danger">{crachaLogado}</strong><br /><span className="small text-muted">{leiturasProcessadas.length} resultados.</span></p>
+                <FilterControls filters={conferenciaFilters} onFilterChange={setConferenciaFilters} onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '' })} sortConfig={conferenciaSort} onSortChange={setConferenciaSort} itemsCount={leiturasProcessadas.length} />
                 <div className="row g-2 mb-3 mt-1">
-                  <div className="col-12 col-sm-6">
-                    <label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Filial</label>
-                    <select
-                      className="form-select form-select-sm"
-                      value={conferenciaFilters.filial}
-                      onChange={e => setConferenciaFilters(prev => ({ ...prev, filial: e.target.value }))}
-                    >
-                      <option value="">Todas as Filiais</option>
-                      <option value="1001">1001 (VA)</option>
-                      <option value="1003">1003 (MA)</option>
-                      <option value="1005">1005 (RA)</option>
-                    </select>
-                  </div>
-                  <div className="col-12 col-sm-6">
-                    <label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Depósito</label>
-                    <select
-                      className="form-select form-select-sm"
-                      value={conferenciaFilters.deposito}
-                      onChange={e => setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }))}
-                    >
-                      <option value="">Todos os Depósitos</option>
-                      <option value="P004">P004</option>
-                      <option value="P030">P030</option>
-                      <option value="P040">P040</option>
-                    </select>
-                  </div>
+                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Filial</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.filial} onChange={e => setConferenciaFilters(prev => ({ ...prev, filial: e.target.value }))}><option value="">Todas as Filiais</option><option value="1001">1001 (VA)</option><option value="1003">1003 (MA)</option><option value="1005">1005 (RA)</option></select></div>
+                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Depósito</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.deposito} onChange={e => setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }))}><option value="">Todos os Depósitos</option>{depositosDisponiveis.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}</select></div>
                 </div>
 
                 <div className="table-responsive border rounded d-none d-md-block" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   <table className="table table-hover text-center align-middle mb-0">
-                    <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}>
-                      <tr>
-                        <th className="py-2">Código da Bobina</th>
-                        {isAdmin && <th className="py-2">Operador</th>}
-                        <th className="py-2">Data e Hora</th>
-                      </tr>
-                    </thead>
+                    <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}><tr><th className="py-2">Lote / Romaneio</th>{isAdmin && <th className="py-2">Operador</th>}<th className="py-2">Data/Hora</th></tr></thead>
                     <tbody>
-                      {leiturasPaginadas.length === 0 ? (
-                        <tr>
-                          <td colSpan={isAdmin ? 3 : 2} className="text-muted py-4">
-                            Nenhuma leitura encontrada com esses filtros.
-                          </td>
-                        </tr>
-                      ) : (
+                      {leiturasPaginadas.length === 0 ? (<tr><td colSpan={isAdmin ? 3 : 2} className="text-muted py-4">Nenhuma leitura.</td></tr>) : (
                         leiturasPaginadas.map((leitura, index) => {
-                          const confKey = `${leitura.codigo}_conf_${index}`;
-                          const expandido = lotesExpandidos[confKey];
+                          const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
                           return (
                             <React.Fragment key={index}>
                               <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
-                                <td className="fw-bold text-primary">
+                                <td className="fw-bold text-primary text-start px-4">
                                   <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
                                   <span className="vp-mono">{leitura.codigo}</span>
                                 </td>
                                 {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
                                 <td>{leitura.dataHora}</td>
                               </tr>
-                              {expandido && (
-                                <tr>
-                                  <td colSpan={isAdmin ? 3 : 2} className="p-0 border-0">
-                                    <div className="p-3 bg-light text-start border-bottom small text-dark animate__animated animate__fadeIn">
-                                      <div className="row g-2">
-                                        <div className="col-12 col-md-6">
-                                          <strong>Material & Descrição:</strong> {leitura.material} - {leitura.descricao}
-                                        </div>
-                                        <div className="col-6 col-md-3">
-                                          <strong>Depósito:</strong> {leitura.deposito}
-                                        </div>
-                                        <div className="col-6 col-md-3">
-                                          <strong>Filial:</strong> {leitura.filial}
-                                        </div>
-                                        <div className="col-6 col-md-4">
-                                          <strong>Peso Líquido:</strong> {leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}
-                                        </div>
-                                        <div className="col-6 col-md-4">
-                                          <strong>Dimensões:</strong> {leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura}mm x ${leitura.espessura}µm` : '-'}
-                                        </div>
-                                        <div className="col-6 col-md-4">
-                                          <strong>OP / OV:</strong> OP: {leitura.ordem_producao} / OV: {leitura.ordem_venda}
-                                        </div>
-                                        <div className="col-12">
-                                          <strong>Cliente:</strong> {leitura.cliente} - {leitura.nome_cliente}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </td>
-                                </tr>
-                              )}
+                              {expandido && (<tr><td colSpan={isAdmin ? 3 : 2} className="p-0 border-0"><div className="p-3 bg-light text-start border-bottom small text-dark animate__animated animate__fadeIn"><div className="row g-3">
+                                <div className="col-12 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val fw-semibold text-dark">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div></div></div>
+                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val fw-semibold text-dark">{leitura.agrupador || '-'}</div></div></div>
+                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Romaneio</span><div className="vp-detail-val fw-semibold text-dark">{leitura.romaneio || '-'}</div></div></div>
+                                <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{leitura.endereco_lido || '-'}</div></div></div>
+                                <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val fw-semibold text-dark">{leitura.endereco_sap || '-'}</div></div></div>
+                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div></div>
+                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div></div>
+                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val fw-semibold text-dark">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div></div>
+                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val fw-semibold text-dark">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div></div>
+                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val fw-semibold text-dark">{leitura.rota || '-'}</div></div></div>
+                              </div></div></td></tr>)}
                             </React.Fragment>
                           );
                         })
@@ -1014,114 +983,41 @@ function App() {
 
                 <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
                   <div className="vp-mobile-cards-list">
-                    {leiturasPaginadas.length === 0 ? (
-                      <div className="text-center text-muted py-4">Nenhuma leitura encontrada com esses filtros.</div>
-                    ) : (
-                      leiturasPaginadas.map((leitura, index) => {
-                        const confKey = `${leitura.codigo}_conf_${index}`;
-                        const expandido = lotesExpandidos[confKey];
-                        return (
-                          <div key={index} className={`vp-mobile-report-card ok ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
-                            <div className="vp-mobile-card-header">
-                              <span className="vp-mobile-card-lote">
-                                <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
-                                <i className="bi bi-box-seam me-1 text-primary"></i> <span className="vp-mono">{leitura.codigo}</span>
-                              </span>
-                            </div>
-                            <div className="vp-mobile-card-body">
-                              <div className="vp-mobile-card-details">
-                                <div className="vp-detail-item">
-                                  <span className="vp-detail-label">Data/Hora:</span>
-                                  <span className="vp-detail-value">{leitura.dataHora}</span>
-                                </div>
-                                {isAdmin && (
-                                  <div className="vp-detail-item mt-1">
-                                    <span className="vp-detail-label">Operador:</span>
-                                    <span className="vp-detail-value">{leitura.nome || leitura.cracha}</span>
-                                  </div>
-                                )}
-                              </div>
-                              {expandido && (
-                                <div className="vp-mobile-card-extra border-top pt-2 mt-2">
-                                  <div className="vp-detail-block mb-2">
-                                    <span className="vp-detail-label">Material & Descrição</span>
-                                    <div className="vp-detail-val small fw-semibold text-dark">{leitura.material} - {leitura.descricao}</div>
-                                  </div>
-                                  <div className="row g-2 mb-2">
-                                    <div className="col-6">
-                                      <div className="vp-detail-block">
-                                        <span className="vp-detail-label">Depósito</span>
-                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.deposito}</div>
-                                      </div>
-                                    </div>
-                                    <div className="col-6">
-                                      <div className="vp-detail-block">
-                                        <span className="vp-detail-label">Filial</span>
-                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.filial}</div>
-                                      </div>
-                                    </div>
-                                    <div className="col-6">
-                                      <div className="vp-detail-block">
-                                        <span className="vp-detail-label">Peso Líquido</span>
-                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div>
-                                      </div>
-                                    </div>
-                                    <div className="col-6">
-                                      <div className="vp-detail-block">
-                                        <span className="vp-detail-label">Dimensões</span>
-                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura}mm x ${leitura.espessura}µm` : '-'}</div>
-                                      </div>
-                                    </div>
-                                    <div className="col-12">
-                                      <div className="vp-detail-block">
-                                        <span className="vp-detail-label">OP / OV</span>
-                                        <div className="vp-detail-val small fw-semibold text-dark">{leitura.ordem_producao} / {leitura.ordem_venda}</div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div className="vp-detail-block">
-                                    <span className="vp-detail-label">Cliente</span>
-                                    <div className="vp-detail-val small fw-semibold text-dark">{leitura.cliente} - {leitura.nome_cliente}</div>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
+                    {leiturasPaginadas.map((leitura, index) => {
+                      const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
+                      return (
+                        <div key={index} className={`vp-mobile-report-card ok ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
+                          <div className="vp-mobile-card-header">
+                            <span className="vp-mobile-card-lote">
+                              <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
+                              <i className="bi bi-box-seam me-1 text-primary"></i> 
+                              <span className="vp-mono">{leitura.codigo}</span>
+                            </span>
                           </div>
-                        )
-                      })
-                    )}
+                          <div className="vp-mobile-card-body"><div className="vp-mobile-card-details"><div className="vp-detail-item"><span className="vp-detail-label">Data/Hora:</span><span className="vp-detail-value">{leitura.dataHora}</span></div>{isAdmin && <div className="vp-detail-item mt-1"><span className="vp-detail-label">Operador:</span><span className="vp-detail-value">{leitura.nome || leitura.cracha}</span></div>}</div>
+                            {expandido && (<div className="vp-mobile-card-extra border-top pt-2 mt-2">
+                              <div className="vp-detail-block mb-2"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div></div>
+                              <div className="row g-2 mb-2">
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.agrupador || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Filial</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.filial || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{leitura.rota !== '-' ? `Rota: ${leitura.rota} | ` : ''}{leitura.endereco_lido || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.endereco_sap || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div></div>
+                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val small fw-semibold text-dark">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div></div>
+                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.rota || '-'}</div></div></div>
+                              </div>
+                              <div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div>
+                            </div>)}
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
-
-                {/* CONTROLOS DE PAGINAÇÃO */}
-                {totalPaginas > 1 && (
-                  <div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top">
-                    <button
-                      className="btn btn-outline-secondary btn-sm px-3"
-                      onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))}
-                      disabled={paginaAtual === 1}
-                    >
-                      <i className="bi bi-chevron-left me-1"></i> Anterior
-                    </button>
-                    <span className="small text-muted fw-semibold">
-                      Página {paginaCorrigida} de {totalPaginas}
-                    </span>
-                    <button
-                      className="btn btn-outline-secondary btn-sm px-3"
-                      onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))}
-                      disabled={paginaAtual === totalPaginas}
-                    >
-                      Próxima <i className="bi bi-chevron-right ms-1"></i>
-                    </button>
-                  </div>
-                )}
-
+                {totalPaginas > 1 && (<div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top"><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))} disabled={paginaAtual === 1}>Anterior</button><span className="small text-muted fw-semibold">Página {paginaCorrigida} de {totalPaginas}</span><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))} disabled={paginaAtual === totalPaginas}>Próxima</button></div>)}
               </div>
-              <div className="modal-footer border-0 justify-content-center pb-4">
-                <button type="button" className="btn btn-secondary px-4 w-100 w-sm-auto" onClick={() => setShowConferencia(false)}>
-                  Fechar
-                </button>
-              </div>
+              <div className="modal-footer border-0 justify-content-center pb-4"><button type="button" className="vp-btn vp-btn-dark w-100 w-sm-auto" onClick={() => setShowConferencia(false)}>Fechar</button></div>
             </div>
           </div>
         </div>
@@ -1129,240 +1025,245 @@ function App() {
 
       <div className="container px-3 px-md-0 pt-2 pb-5" style={{ maxWidth: '800px', width: '100%' }}>
         <Header />
-
         <div className="vp-operator-card animate__animated animate__fadeIn mb-4">
-          <div className="vp-operator-info">
-            <div className="vp-operator-avatar">
-              {obterIniciais(nomeLogado)}
-            </div>
-            <div>
-              <span className="vp-micro-label" style={{ margin: 0 }}>Operador Logado</span>
-              <h4 className="vp-operator-name">{nomeLogado}</h4>
-              <span className="vp-operator-badge"><i className="bi bi-person-badge"></i> {crachaLogado}</span>
-            </div>
-          </div>
-
-          <div className="vp-operator-actions">
-            <button className="vp-btn vp-btn-outline" onClick={abrirConferenciaAdmin} disabled={carregandoAcao}>
-              <i className="bi bi-list-check"></i> Conferência
-            </button>
-            <button className="vp-btn vp-btn-ghost-danger" onClick={fazerLogout} disabled={carregandoAcao}>
-              <i className="bi bi-box-arrow-right"></i> Sair
-            </button>
-          </div>
+          <div className="vp-operator-info"><div className="vp-operator-avatar">{obterIniciais(nomeLogado)}</div><div><span className="vp-micro-label" style={{ margin: 0 }}>Operador Logado</span><h4 className="vp-operator-name">{nomeLogado}</h4><span className="vp-operator-badge"><i className="bi bi-person-badge"></i> {crachaLogado}</span></div></div>
+          <div className="vp-operator-actions"><button className="vp-btn vp-btn-outline" onClick={abrirConferenciaAdmin} disabled={carregandoAcao}><i className="bi bi-list-check"></i> Conferência</button><button className="vp-btn vp-btn-ghost-danger" onClick={fazerLogout} disabled={carregandoAcao}><i className="bi bi-box-arrow-right"></i> Sair</button></div>
         </div>
 
         <main>
           <div className="vp-card vp-sap-card no-hover animate__animated animate__fadeIn mb-4">
-            <div className="vp-sap-info">
-              <div className="vp-sap-icon">
-                <i className="bi bi-filetype-csv"></i>
-              </div>
-              <div>
-                <h3 className="vp-title">Base do SAP (CSV)</h3>
-                <p className="vp-subtitle">Importe a planilha oficial gerada pelo sistema SAP.</p>
-              </div>
-            </div>
-            <div className="w-100 w-sm-auto">
-              <input type="file" accept=".csv" className="d-none" ref={fileInputRef} onChange={importarCSV} id="csvUpload" disabled={carregandoAcao} />
-              <label htmlFor="csvUpload" className={`vp-btn vp-btn-outline w-100 w-sm-auto d-flex justify-content-center align-items-center gap-2 ${carregandoAcao ? 'disabled' : ''}`} style={{ height: '44px' }}>
-                {carregandoAcao ? (
-                  <span className="spinner-border spinner-border-sm" role="status"></span>
-                ) : (
-                  <i className="bi bi-cloud-upload"></i>
-                )}
-                {carregandoAcao ? 'Salvando...' : 'Importar SAP'}
-              </label>
-            </div>
+            <div className="vp-sap-info"><div className="vp-sap-icon"><i className="bi bi-filetype-csv"></i></div><div><h3 className="vp-title">Relatório SAP</h3><p className="vp-subtitle">Importe a planilha atualizada.</p></div></div>
+            <div className="w-100 w-sm-auto"><input type="file" accept=".csv" className="d-none" ref={fileInputRef} onChange={importarCSV} id="csvUpload" disabled={carregandoAcao} /><label htmlFor="csvUpload" className={`vp-btn vp-btn-outline w-100 w-sm-auto d-flex justify-content-center align-items-center ${carregandoAcao ? 'disabled' : ''}`}>{carregandoAcao ? <span className="spinner-border spinner-border-sm" role="status"></span> : <i className="bi bi-cloud-upload"></i>} {carregandoAcao ? 'Lendo...' : 'Importar Planilha'}</label></div>
           </div>
 
-          {usandoDrone ? (
-            <ProcessadorDrone
-              aoConcluir={processarLoteDrone}
-              aoCancelar={() => setUsandoDrone(false)}
-            />
-          ) : usandoCamera ? (
-            <Scanner aoLerCodigo={adicionarBobina} aoCancelar={() => setUsandoCamera(false)} />
-          ) : (
-            <div className="vp-card no-hover mb-4" style={{ margin: 0 }}>
-              <span className="vp-micro-label">Leitura Ativa</span>
-              <h2 className="vp-title">Bipar Bobina</h2>
-              <p className="vp-subtitle" style={{ marginBottom: '1.25rem' }}>Utilize o leitor conectado, a câmera do celular ou processe em lote via drone.</p>
+          <div className="vp-card no-hover mb-4 animate__animated animate__fadeIn" style={{ margin: 0 }}>
 
-              <div className="vp-input-group mb-3">
-                <textarea
-                  ref={inputRef}
-                  className="vp-input"
-                  placeholder="Bipe ou digite os códigos (espaço, vírgula ou Enter)..."
-                  value={codigo}
-                  onChange={(e) => setCodigo(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      if (!carregandoAcao) adicionarBobina();
-                    }
-                  }}
-                  disabled={carregandoAcao}
-                  rows={2}
-                />
-                <button
-                  className="vp-btn vp-btn-primary"
-                  onClick={() => adicionarBobina()}
-                  disabled={carregandoAcao}
-                  style={{ padding: '0 1.75rem' }}
-                >
-                  <i className="bi bi-plus-lg"></i> Adicionar
-                </button>
+            {etapaInventario === 'OCIOSO' && (
+              <div className="text-center py-4 animate__animated animate__fadeIn">
+                <div className="d-inline-flex align-items-center justify-content-center bg-light rounded-circle mb-3" style={{ width: '80px', height: '80px' }}>
+                  <i className="bi bi-boxes text-dark" style={{ fontSize: '2.5rem' }}></i>
+                </div>
+                <h2 className="vp-title mb-4">Pronto para a Contagem</h2>
+                <div className="mx-auto" style={{ maxWidth: '300px' }}>
+                  <button className="vp-btn vp-btn-primary vp-btn-lg w-100 shadow-sm" onClick={() => setEtapaInventario('ESCOLHER_MODO')}>
+                    <i className="bi bi-play-circle-fill"></i> Iniciar Inventário
+                  </button>
+                </div>
               </div>
+            )}
 
-              <div className="vp-scanner-actions">
-                <button className="vp-btn vp-btn-dark flex-grow-1" onClick={() => setUsandoCamera(true)} disabled={carregandoAcao}>
-                  <i className="bi bi-camera"></i> Câmera Celular
-                </button>
-                <button className="vp-btn vp-btn-outline flex-grow-1" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)' }} onClick={() => setUsandoDrone(true)} disabled={carregandoAcao}>
-                  <i className="bi bi-send-check"></i> Processar Drone
-                </button>
+            {etapaInventario === 'ESCOLHER_MODO' && (
+              <div className="text-center py-2 animate__animated animate__zoomIn animate__faster">
+                <span className="vp-micro-label mb-3">Modo de Inventário</span><h3 className="vp-title mb-4">Como deseja realizar a contagem?</h3>
+                <div className="row g-3 mb-4">
+                  <div className="col-12 col-md-6">
+                    <button className="vp-btn vp-btn-outline p-4 d-flex flex-column align-items-center justify-content-center w-100 h-100 vp-modo-card" onClick={() => { setModoInventario('COM_ENDERECO'); setEtapaInventario('INFORMAR_ENDERECO'); }}>
+                      <div className="bg-light rounded-circle p-3 mb-3">
+                        <i className="bi bi-geo-alt-fill fs-3 vp-modo-icon" style={{ color: 'var(--vp-primary)' }}></i>
+                      </div>
+                      <span className="fw-bold fs-5 text-dark">Com Endereço</span>
+                      <span className="small text-muted mt-2 fw-normal text-wrap">Informar depósito/gaveta.</span>
+                    </button>
+                  </div>
+                  <div className="col-12 col-md-6">
+                    <button className="vp-btn vp-btn-outline p-4 d-flex flex-column align-items-center justify-content-center w-100 h-100 vp-modo-card" onClick={() => { setModoInventario('SEM_ENDERECO'); setEtapaInventario('BIPANDO'); }}>
+                      <div className="bg-light rounded-circle p-3 mb-3">
+                        <i className="bi bi-qr-code-scan fs-3 text-secondary vp-modo-icon"></i>
+                      </div>
+                      <span className="fw-bold fs-5 text-dark">Sem Endereço</span>
+                      <span className="small text-muted mt-2 fw-normal text-wrap">Bipagem livre.</span>
+                    </button>
+                  </div>
+                </div>
+                <button className="vp-btn vp-btn-ghost-danger w-100 text-decoration-none" onClick={() => setEtapaInventario('OCIOSO')}>Cancelar</button>
               </div>
-            </div>
-          )}
+            )}
+
+            {etapaInventario === 'INFORMAR_ENDERECO' && (
+              <div className="text-center py-4 animate__animated animate__fadeInRight animate__faster">
+                <span className="vp-micro-label mb-2">Endereçamento</span>
+                <div className="mx-auto" style={{ maxWidth: '500px' }}>
+
+                  <div className="mb-4 text-start">
+                    <label className="form-label small fw-bold text-secondary mb-1">Depósito</label>
+                    <select
+                      className="form-select form-select-lg shadow-sm vp-input-destaque"
+                      value={depositoAtual}
+                      onChange={e => {
+                        setDepositoAtual(e.target.value);
+                        setGondolaAtual('');
+                        setGavetaAtual('');
+                      }}
+                      style={{ fontSize: '1.1rem', height: '54px', borderColor: 'var(--vp-border)', cursor: 'pointer' }}
+                    >
+                      <option value="">Selecione o Depósito...</option>
+                      {depositosDisponiveis.map(d => (
+                        <option key={d.id} value={d.id}>{d.id} - {d.nome} {d.requerEndereco ? '(Gôndola/Gaveta)' : '(S/ Endereço)'}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {depositosDisponiveis.find(d => d.id === depositoAtual)?.requerEndereco && (
+                    <div className="row g-2 mb-4 animate__animated animate__fadeIn">
+                      <div className="mb-4 text-start">
+                        <label className="form-label small fw-bold text-secondary mb-1">Rota (Opcional)</label>
+                        <select 
+                          className="form-select form-select-lg shadow-sm vp-input-destaque"
+                          value={rotaAtual}
+                          onChange={e => setRotaAtual(e.target.value)}
+                          style={{ fontSize: '1.1rem', height: '54px', borderColor: 'var(--vp-border)' }}
+                      >
+                          <option value="">Nenhuma Rota selecionada</option>
+                          {rotasDisponiveis.map((r) => (<option key={r.id} value={r.id}>{r.rota}</option>))}
+                      </select>
+                      </div>
+                      <div className="col-6 text-start"><label className="form-label small fw-bold text-secondary mb-2">Gôndola (Opcional)</label><input ref={gondolaInputRef} type="text" className="form-control form-control-lg w-100 text-center shadow-sm" placeholder="Ex: G01" value={gondolaAtual} onChange={e => setGondolaAtual(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && gavetaInputRef.current?.focus()} style={{ height: '54px' }} /></div>
+                      <div className="col-6 text-start"><label className="form-label small fw-bold text-secondary mb-1">Gaveta / Posição</label><input ref={gavetaInputRef} type="text" className="vp-input vp-input-lg w-100 text-center shadow-sm vp-input-destaque" placeholder="Ex: A1" value={gavetaAtual} onChange={e => setGavetaAtual(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && avancarParaInformarEndereco()} /></div>
+                    </div>
+                  )}
+
+                  <div className="row g-2"><div className="col-6"><button className="vp-btn vp-btn-outline vp-btn-lg w-100" onClick={() => setEtapaInventario('ESCOLHER_MODO')}>Voltar</button></div><div className="col-6"><button className="vp-btn vp-btn-primary vp-btn-lg w-100 shadow-sm" onClick={avancarParaInformarEndereco}>Avançar <i className="bi bi-arrow-right"></i></button></div></div>
+                </div>
+              </div>
+            )}
+
+            {etapaInventario === 'BIPANDO' && (
+              <div className="animate__animated animate__fadeIn animate__faster">
+                <div className="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom">
+                  <div>
+                    <span className="vp-micro-label m-0">Leitura Ativa</span>
+                    {modoInventario === 'COM_ENDERECO' ? (
+                      <h4 className="vp-title text-primary mb-0 mt-1 fs-6 lh-base w-100 text-break">
+                        <i className="bi bi-geo-alt-fill"></i> {nomeRotaAtiva ? `Rota: ${nomeRotaAtiva} | ` : ''}{depositosDisponiveis.find(d => d.id === depositoAtual)?.requerEndereco ? `${depositoAtual}${gondolaAtual.trim() ? ` | G: ${gondolaAtual}` : ''} | P: ${gavetaAtual}` : `Depósito: ${depositoAtual}`}
+                      </h4>
+                    ) : (
+                      <h4 className="vp-title text-secondary mb-0 mt-1"><i className="bi bi-upc-scan"></i> Bipagem Livre</h4>
+                    )}
+                  </div>
+                  {modoInventario === 'COM_ENDERECO' ? (
+                    <button className="vp-btn vp-btn-success" onClick={finalizarGaveta}>
+                      <i className="bi bi-check2-all"></i> {depositosDisponiveis.find(d => d.id === depositoAtual)?.requerEndereco ? 'Finalizar Gaveta' : 'Finalizar Depósito'}
+                    </button>
+                  ) : (
+                    <button className="vp-btn vp-btn-outline-danger" onClick={encerrarInventarioLivre}><i className="bi bi-stop-circle"></i> Encerrar</button>
+                  )}
+                </div>
+
+                {usandoDrone ? (<ProcessadorDrone aoConcluir={processarLoteDrone} aoCancelar={() => setUsandoDrone(false)} />) : usandoCamera ? (<Scanner aoLerCodigo={adicionarBobina} aoCancelar={() => setUsandoCamera(false)} />) : (
+                  <>
+                    <div className="bg-white p-3 p-md-4 rounded border mb-4 shadow-sm">
+                      <label className="form-label fw-bold text-secondary mb-3"><i className="bi bi-keyboard"></i> Digitação ou Leitor USB</label>
+                      <textarea
+                        ref={inputRef}
+                        className="vp-input w-100 bg-light mb-3 vp-input-destaque p-3"
+                        placeholder="Informe lotes ou romaneios..."
+                        value={codigo}
+                        onChange={(e) => setCodigo(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            if (!carregandoAcao && codigo.trim() !== '') adicionarBobina();
+                          }
+                        }}
+                        disabled={carregandoAcao}
+                        rows={6}
+                        style={{ resize: 'none', fontSize: '1.0rem', lineHeight: '1.5' }}
+                      />
+                      <button
+                        className="vp-btn vp-btn-primary vp-btn-lg w-100 shadow-sm"
+                        onClick={() => adicionarBobina()}
+                        disabled={carregandoAcao || codigo.trim() === ''}
+                      >
+                        <i className="bi bi-plus-circle-fill"></i> Processar Códigos
+                      </button>
+                    </div>
+
+                    <div className="d-flex align-items-center mb-4">
+                      <div className="flex-grow-1 border-bottom"></div>
+                      <span className="px-3 text-muted small fw-bold">OU UTILIZE A CÂMERA</span>
+                      <div className="flex-grow-1 border-bottom"></div>
+                    </div>
+
+                    <div className="row g-2">
+                      <div className="col-12 col-sm-6">
+                        <button className="vp-btn vp-btn-outline-danger w-100" onClick={() => setUsandoCamera(true)} disabled={carregandoAcao}>
+                          <i className="bi bi-camera-fill fs-5"></i> Câmera Celular
+                        </button>
+                      </div>
+                      <div className="col-12 col-sm-6">
+                        <button className="vp-btn vp-btn-outline-warning w-100" onClick={() => setUsandoDrone(true)} disabled={carregandoAcao}>
+                          <i className="bi bi-send-check-fill fs-5"></i> Processar Drone
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="vp-counters-container animate__animated animate__fadeIn mb-4">
-            <div className="vp-counter-card esperadas">
-              <div className="vp-counter-header">
-                <span className="vp-counter-label">Esperadas</span>
-                <i className="bi bi-calculator"></i>
-              </div>
-              <h3 className="vp-counter-value">{qtdEsperadas}</h3>
-            </div>
-
-            <div className="vp-counter-card lidas">
-              <div className="vp-counter-header">
-                <span className="vp-counter-label">Lidas</span>
-                <i className="bi bi-check-circle"></i>
-              </div>
-              <h3 className="vp-counter-value">{qtdLidas}</h3>
-            </div>
-
-            <div className="vp-counter-card faltam">
-              <div className="vp-counter-header">
-                <span className="vp-counter-label">Faltam</span>
-                <i className="bi bi-exclamation-circle"></i>
-              </div>
-              <h3 className="vp-counter-value">{qtdFaltam}</h3>
-            </div>
+            <div className="vp-counter-card esperadas"><div className="vp-counter-header"><span className="vp-counter-label">Esperadas</span><i className="bi bi-calculator"></i></div><h3 className="vp-counter-value">{qtdEsperadas}</h3></div>
+            <div className="vp-counter-card lidas"><div className="vp-counter-header"><span className="vp-counter-label">Lidas</span><i className="bi bi-check-circle"></i></div><h3 className="vp-counter-value">{qtdLidas}</h3></div>
+            <div className="vp-counter-card faltam"><div className="vp-counter-header"><span className="vp-counter-label">Faltam</span><i className="bi bi-exclamation-circle"></i></div><h3 className="vp-counter-value">{qtdFaltam}</h3></div>
           </div>
 
           <div className="vp-bottom-actions animate__animated animate__fadeIn mb-4">
-            <button onClick={gerarRelatorio} className="vp-btn vp-btn-outline w-100 py-3 fw-semibold gap-2" style={{ borderColor: 'var(--vp-green)', color: 'var(--vp-green)', height: '52px' }}>
-              <i className="bi bi-file-earmark-spreadsheet fs-5"></i> Exportar Relatório Conciliado
-            </button>
-
-            <button onClick={limparDados} className="vp-btn vp-btn-ghost-danger w-100 py-3 text-decoration-none gap-2" style={{ height: '52px', marginTop: '0.25rem' }}>
-              <i className="bi bi-arrow-counterclockwise fs-5"></i> Iniciar Novo Inventário
-            </button>
+            <button onClick={gerarRelatorio} className="vp-btn vp-btn-outline-success vp-btn-lg w-100"><i className="bi bi-file-earmark-spreadsheet fs-5"></i> Exportar Relatório Conciliado</button>
+            <button onClick={limparDados} className="vp-btn vp-btn-ghost-danger vp-btn-lg w-100 mt-2"><i className="bi bi-arrow-counterclockwise fs-5"></i> Iniciar Novo Inventário</button>
           </div>
 
           {relatorioNaTela.length > 0 && (
             <>
-              {/* DESKTOP TABLE VIEW */}
               <div className="vp-desktop-table-wrapper card shadow-sm border-0 mb-4 animate__animated animate__fadeIn overflow-hidden">
                 <div className="card-body p-0 table-responsive">
                   <table className="table table-hover mb-0 text-center align-middle" style={{ whiteSpace: 'nowrap' }}>
-                    <thead className="table-dark">
-                      <tr>
-                        <th className="py-3 px-3 text-start text-sm-center" style={{ width: '40%' }}>Lote/Código</th>
-                        <th className="py-3 px-3" style={{ width: '40%' }}>Status</th>
-                        <th className="py-3 px-3" style={{ width: '20%' }}>Ação</th>
-                      </tr>
-                    </thead>
+                    <thead className="table-dark"><tr><th className="py-3 px-3 text-start text-sm-center" style={{ width: '40%' }}>Lote / Romaneio</th><th className="py-3 px-3" style={{ width: '40%' }}>Status</th><th className="py-3 px-3" style={{ width: '20%' }}>Ação</th></tr></thead>
                     <tbody>
                       {relatorioNaTela.map((item, idx) => {
                         const expandido = lotesExpandidos[item.codigo];
+                        
                         return (
                           <React.Fragment key={idx}>
-                            <tr
-                              className={`vp-table-row-main ${item.tipo === 'faltando' ? 'table-danger opacity-75' : ''} ${expandido ? 'vp-row-expanded' : ''}`}
-                              onClick={() => toggleLoteExpandido(item.codigo)}
-                              style={{ cursor: 'pointer' }}
-                            >
+                            <tr className={`vp-table-row-main ${item.tipo === 'faltando' ? 'table-danger opacity-75' : ''} ${expandido ? 'vp-row-expanded' : ''}`} onClick={() => toggleLoteExpandido(item.codigo)} style={{ cursor: 'pointer' }}>
+                              
                               <td className="fw-bold py-3 px-3 text-start text-sm-center">
                                 <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
                                 <span className="vp-mono">{item.codigo}</span>
+                                {item.rota && item.rota !== '-' && <span className="badge bg-info text-dark ms-2 px-2 py-1 rounded-pill border border-info" style={{fontSize: '0.75rem'}}><i className="bi bi-geo me-1"></i>{item.rota}</span>}
                               </td>
+                              
                               <td className="px-3">
                                 {item.tipo === 'ok' && <span className="badge bg-success w-100 py-2">OK (Lida)</span>}
                                 {item.tipo === 'faltando' && <span className="badge bg-danger w-100 py-2">Faltando</span>}
                                 {item.tipo === 'sobrando' && <span className="badge bg-warning text-dark w-100 py-2">Sobra</span>}
+                                {item.tipo === 'divergencia' && <span className="badge w-100 py-2" style={{ backgroundColor: '#fd7e14' }}>Local Incorreto</span>}
                                 {!item.tipo && <span className="badge bg-secondary w-100 py-2">{item.status}</span>}
                               </td>
+                              
                               <td className="px-3" onClick={(e) => e.stopPropagation()}>
                                 {item.tipo !== 'faltando' && (
-                                  <button
-                                    className="btn btn-sm btn-outline-danger border-0"
-                                    onClick={() => removerBobina(item.codigo)}
-                                    title="Excluir leitura"
-                                    disabled={carregandoAcao}
-                                  >
-                                    <i className="bi bi-trash fs-5"></i>
-                                  </button>
+                                    <button className="vp-btn vp-btn-outline-danger border-0 p-2" onClick={() => removerBobina(item.codigo)} title="Excluir leitura" disabled={carregandoAcao}><i className="bi bi-trash fs-5 m-0"></i></button>
                                 )}
                               </td>
                             </tr>
+                            
                             {expandido && (
                               <tr className="vp-table-row-details">
                                 <td colSpan="3" className="p-0 border-0">
                                   <div className="vp-row-details-content p-3 bg-light text-start border-bottom">
                                     <div className="row g-3">
-                                      <div className="col-12 col-md-6">
-                                        <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Material & Descrição</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.material || '-'} - {item.descricao || '-'}</div>
-                                        </div>
-                                      </div>
-                                      <div className="col-6 col-md-3">
-                                        <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Depósito / Armazém</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.deposito || '-'}</div>
-                                        </div>
-                                      </div>
-                                      <div className="col-6 col-md-3">
-                                        <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Filial</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.filial || '-'}</div>
-                                        </div>
-                                      </div>
-                                      <div className="col-6 col-md-4">
-                                        <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Peso Líquido</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</div>
-                                        </div>
-                                      </div>
-                                      <div className="col-6 col-md-4">
-                                        <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Largura x Espessura</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.largura !== '-' && item.espessura !== '-' ? `${item.largura} mm x ${item.espessura} µm` : '-'}</div>
-                                        </div>
-                                      </div>
-                                      <div className="col-6 col-md-4">
-                                        <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Ordem Produção / Venda</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">OP: {item.ordem_producao || '-'} / OV: {item.ordem_venda || '-'}</div>
-                                        </div>
-                                      </div>
-                                      <div className="col-12">
-                                        <div className="vp-detail-block">
-                                          <span className="vp-detail-label">Cliente</span>
-                                          <div className="vp-detail-val fw-semibold text-dark">{item.cliente || '-'} - {item.nome_cliente || '-'}</div>
-                                        </div>
-                                      </div>
-                                      {item.tipo !== 'faltando' && (
-                                        <div className="col-12 border-top pt-2 mt-2">
-                                          <small className="text-muted">
-                                            <i className="bi bi-clock me-1"></i>
-                                            {item.dataHora !== '-' ? `Bipada em ${item.dataHora} por ${item.nome_operador} (${item.cracha})` : 'Aguardando bipagem.'}
-                                          </small>
-                                        </div>
-                                      )}
+                                      <div className="col-12 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val fw-semibold text-dark">{item.material !== '-' ? item.material : ''} {item.material !== '-' && item.descricao !== '-' ? '-' : ''} {item.descricao !== '-' ? item.descricao : ''}</div></div></div>
+                                      <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val fw-semibold text-dark">{item.agrupador || '-'}</div></div></div>
+                                      <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">ROMANEIO</span><div className="vp-detail-val fw-semibold text-dark">{item.romaneio || '-'}</div></div></div>
+                                      <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{item.endereco_lido || '-'}</div></div></div>
+                                      <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val fw-semibold text-dark">{item.endereco_sap || '-'}</div></div></div>
+                                      <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val fw-semibold text-dark">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</div></div></div>
+                                      <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val fw-semibold text-dark">{item.largura !== '-' && item.espessura !== '-' ? `${item.largura} mm x ${item.espessura} µm` : '-'}</div></div></div>
+                                      <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val fw-semibold text-dark">OP: {item.ordem_producao || '-'} / OV: {item.ordem_venda || '-'}</div></div></div>
+                                      <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val fw-semibold text-dark">{item.cliente !== '-' ? item.cliente : ''} {item.cliente !== '-' && item.nome_cliente !== '-' ? '-' : ''} {item.nome_cliente !== '-' ? item.nome_cliente : ''}</div></div></div>
+                                      <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val fw-semibold text-dark">{item.rota || '-'}</div></div></div>
+                                      {item.tipo !== 'faltando' && (<div className="col-12 border-top pt-2 mt-2"><small className="text-muted"><i className="bi bi-clock me-1"></i>{item.dataHora !== '-' ? `Bipada em ${item.dataHora} por ${item.nome_operador} (${item.cracha})` : 'Aguardando bipagem.'}</small></div>)}
                                     </div>
                                   </div>
                                 </td>
@@ -1375,110 +1276,58 @@ function App() {
                   </table>
                 </div>
               </div>
-
-              {/* MOBILE CARDS VIEW */}
-              <div className="vp-mobile-cards-list animate__animated animate__fadeIn">
-                {relatorioNaTela.map((item, idx) => {
-                  const expandido = lotesExpandidos[item.codigo];
-                  return (
-                    <div
-                      key={idx}
-                      className={`vp-mobile-report-card ${item.tipo || 'default'} ${expandido ? 'expanded' : ''}`}
-                      onClick={() => toggleLoteExpandido(item.codigo)}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      <div className="vp-mobile-card-header">
-                        <span className="vp-mobile-card-lote">
-                          <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
-                          <i className="bi bi-box-seam me-1 text-primary"></i> <span className="vp-mono">{item.codigo}</span>
-                        </span>
-                        <div className="vp-mobile-card-actions" onClick={(e) => e.stopPropagation()}>
-                          {item.tipo !== 'faltando' && (
-                            <button
-                              className="vp-btn-delete"
-                              onClick={() => removerBobina(item.codigo)}
-                              disabled={carregandoAcao}
-                              title="Excluir leitura"
-                            >
-                              <i className="bi bi-trash"></i>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <div className="vp-mobile-card-body">
-                        <div className="vp-mobile-card-row">
-                          <span className="vp-mobile-card-label">Status:</span>
-                          <span className={`vp-mobile-card-badge ${item.tipo || 'default'}`}>
-                            {item.tipo === 'ok' && 'Lida / SAP OK'}
-                            {item.tipo === 'faltando' && 'Faltando (Não Bipada)'}
-                            {item.tipo === 'sobrando' && 'Sobrando (Não SAP)'}
-                            {!item.tipo && item.status}
+              
+              <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
+                <div className="vp-mobile-cards-list">
+                  {relatorioNaTela.map((item, idx) => {
+                    const expandido = lotesExpandidos[item.codigo];
+                    return (
+                      <div key={idx} className={`vp-mobile-report-card ${item.tipo || 'default'} ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(item.codigo)} style={{ cursor: 'pointer' }}>
+                        <div className="vp-mobile-card-header">
+                          <span className="vp-mobile-card-lote">
+                            <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
+                            <i className="bi bi-box-seam me-1 text-primary"></i> 
+                            <span className="vp-mono">{item.codigo}</span>
+                            {item.rota && item.rota !== '-' && <span className="badge bg-info text-dark ms-2 px-2 py-1 rounded-pill" style={{fontSize: '0.7rem'}}>{item.rota}</span>}
                           </span>
+                          <div className="vp-mobile-card-actions" onClick={(e) => e.stopPropagation()}>{item.tipo !== 'faltando' && (<button className="vp-btn-delete" onClick={() => removerBobina(item.codigo)} disabled={carregandoAcao} title="Excluir leitura"><i className="bi bi-trash m-0"></i></button>)}</div>
                         </div>
-
-                        <div className="vp-mobile-card-details">
-                          {item.tipo !== 'faltando' && (
-                            <>
-                              <div className="vp-detail-item">
-                                <span className="vp-detail-label">Data/Hora:</span>
-                                <span className="vp-detail-value">{item.dataHora || '-'}</span>
+                        <div className="vp-mobile-card-body">
+                          <div className="vp-mobile-card-row">
+                            <span className="vp-mobile-card-label">Status:</span>
+                            <span className={`vp-mobile-card-badge ${item.tipo || 'default'}`}>
+                              {item.tipo === 'ok' && 'Lida / SAP OK'}
+                              {item.tipo === 'faltando' && 'Faltando (Não Bipada)'}
+                              {item.tipo === 'sobrando' && 'Sobrando (Não SAP)'}
+                              {item.tipo === 'divergencia' && 'Lida em Local Incorreto'}
+                              {!item.tipo && item.status}
+                            </span>
+                          </div>
+                          <div className="vp-mobile-card-details">
+                            {item.tipo !== 'faltando' && (<><div className="vp-detail-item"><span className="vp-detail-label">Data/Hora:</span><span className="vp-detail-value">{item.dataHora || '-'}</span></div><div className="vp-detail-item"><span className="vp-detail-label">Operador:</span><span className="vp-detail-value">{item.nome_operador || '-'}</span></div></>)}
+                          </div>
+                          {expandido && (
+                            <div className="vp-mobile-card-extra border-top pt-2 mt-2">
+                              <div className="vp-detail-block mb-2"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val small fw-semibold text-dark">{item.material !== '-' ? item.material : ''} {item.material !== '-' && item.descricao !== '-' ? '-' : ''} {item.descricao !== '-' ? item.descricao : ''}</div></div>
+                              <div className="row g-2 mb-2">
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val small fw-semibold text-dark">{item.agrupador || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Romaneio</span><div className="vp-detail-val small fw-semibold text-dark">{item.romaneio || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Filial</span><div className="vp-detail-val small fw-semibold text-dark">{item.filial || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val small fw-bold text-primary">{item.endereco_lido || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val small fw-semibold text-dark">{item.endereco_sap || '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val small fw-semibold text-dark">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</div></div></div>
+                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val small fw-semibold text-dark">{item.largura !== '-' && item.espessura !== '-' ? `${item.largura} mm x ${item.espessura} µm` : '-'}</div></div></div>
+                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val small fw-semibold text-dark">OP: {item.ordem_producao || '-'} / OV: {item.ordem_venda || '-'}</div></div></div>
+                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val small fw-semibold text-dark">{item.rota || '-'}</div></div></div>
                               </div>
-                              <div className="vp-detail-item">
-                                <span className="vp-detail-label">Operador:</span>
-                                <span className="vp-detail-value">{item.nome_operador || '-'}</span>
-                              </div>
-                            </>
+                              <div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val small fw-semibold text-dark">{item.cliente !== '-' ? item.cliente : ''} {item.cliente !== '-' && item.nome_cliente !== '-' ? '-' : ''} {item.nome_cliente !== '-' ? item.nome_cliente : ''}</div></div>
+                            </div>
                           )}
                         </div>
-
-                        {expandido && (
-                          <div className="vp-mobile-card-extra border-top pt-2 mt-2">
-                            <div className="vp-detail-block mb-2">
-                              <span className="vp-detail-label">Material & Descrição</span>
-                              <div className="vp-detail-val small fw-semibold text-dark">{item.material || '-'} - {item.descricao || '-'}</div>
-                            </div>
-                            <div className="row g-2 mb-2">
-                              <div className="col-6">
-                                <div className="vp-detail-block">
-                                  <span className="vp-detail-label">Depósito</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.deposito || '-'}</div>
-                                </div>
-                              </div>
-                              <div className="col-6">
-                                <div className="vp-detail-block">
-                                  <span className="vp-detail-label">Filial</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.filial || '-'}</div>
-                                </div>
-                              </div>
-                              <div className="col-6">
-                                <div className="vp-detail-block">
-                                  <span className="vp-detail-label">Peso Líquido</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</div>
-                                </div>
-                              </div>
-                              <div className="col-6">
-                                <div className="vp-detail-block">
-                                  <span className="vp-detail-label">Dimensões</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.largura && item.espessura ? `${item.largura}mm x ${item.espessura}µm` : '-'}</div>
-                                </div>
-                              </div>
-                              <div className="col-12">
-                                <div className="vp-detail-block">
-                                  <span className="vp-detail-label">OP / OV</span>
-                                  <div className="vp-detail-val small fw-semibold text-dark">{item.ordem_producao || '-'} / {item.ordem_venda || '-'}</div>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="vp-detail-block">
-                              <span className="vp-detail-label">Cliente</span>
-                              <div className="vp-detail-val small fw-semibold text-dark">{item.cliente || '-'} - {item.nome_cliente || '-'}</div>
-                            </div>
-                          </div>
-                        )}
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </>
           )}
