@@ -226,15 +226,23 @@ function App() {
       if (leituras) {
         const listaGlobal = leituras.map(b => {
           const dono = crachas?.find(c => c.id === b.cracha_leitura);
-          const dadosSap = sapBanco?.find(s => s.lote === b.codigo) || csvBobinas.find(c => c.codigo === b.codigo);
+          const dadosSap = sapBanco?.find(s => s.lote === b.lote) || csvBobinas.find(c => c.codigo === b.lote);
           const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
-          let dataFormatada = dataOriginal ? new Date(dataOriginal).toLocaleString('pt-BR') : '-';
-          const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.codigo) || '-';
+          let dataFormatada = '-';
+          if (dataOriginal) {
+            const d = new Date(dataOriginal);
+            if (!isNaN(d.getTime())) {
+              dataFormatada = `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR')}`;
+            } else {
+              dataFormatada = dataOriginal;
+            }
+          }
+          const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
 
           const nomeRota = rotasDisponiveis.find(r => String(r.id) === String(b.rotas))?.rota || b.rotas || '-';
 
           return {
-            codigo: b.codigo, dataHora: dataFormatada, cracha: b.cracha_leitura, nome: dono ? dono.nome_completo : b.cracha_leitura,
+            codigo: b.lote, dataHora: dataFormatada, cracha: b.cracha_leitura, nome: dono ? dono.nome_completo : b.cracha_leitura,
             lote: b.lote, romaneio: b.romaneio,
             filial: filialFinal, deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
             endereco_lido: b.endereco_lido || '-', endereco_sap: formatarEnderecoSAP(dadosSap),
@@ -542,7 +550,7 @@ function App() {
         }
 
         listaAtualizada = [{
-          codigo: identificadorFinal, lote: identificadorFinal, romaneio: bobinaSAP ? bobinaSAP.romaneio : null, dataHora: new Date().toLocaleString('pt-BR'), cracha: crachaLogado,
+          codigo: identificadorFinal, lote: identificadorFinal, romaneio: bobinaSAP ? bobinaSAP.romaneio : null, dataHora: `${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}`, cracha: crachaLogado,
           nome: nomeLogado, filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rota: rotaAtual
         }, ...listaAtualizada];
       }
@@ -613,7 +621,7 @@ function App() {
           codigo: identificadorFinal, 
           lote: identificadorFinal,
           romaneio: bobinaSAP ? bobinaSAP.romaneio : null,
-          dataHora: new Date().toLocaleString('pt-BR'), cracha: crachaLogado, nome: nomeLogado,
+          dataHora: `${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}`, cracha: crachaLogado, nome: nomeLogado,
           filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rota: rotaAtual
         }, ...listaAtualizada];
 
@@ -782,7 +790,16 @@ function App() {
     if (conferenciaFilters.deposito && l.deposito !== conferenciaFilters.deposito) return false;
     return true;
   }).sort((a, b) => {
-    return new Date(b.dataHora.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3-$2-$1')) - new Date(a.dataHora.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3-$2-$1'));
+    const parseData = (str) => {
+      if (!str || str === '-') return 0;
+      const match = str.match(/(\d{2})\/(\d{2})\/(\d{4})[,\s]*(\d{2}):(\d{2}):(\d{2})/);
+      if (match) return new Date(`${match[3]}-${match[2]}-${match[1]}T${match[4]}:${match[5]}:${match[6]}`).getTime();
+      return 0;
+    };
+    if (conferenciaSort.field === 'Data') {
+       return conferenciaSort.order === 'asc' ? parseData(a.dataHora) - parseData(b.dataHora) : parseData(b.dataHora) - parseData(a.dataHora);
+    }
+    return 0;
   });
 
   const totalPaginas = Math.ceil(leiturasProcessadas.length / ITENS_POR_PAGINA) || 1;
@@ -949,33 +966,51 @@ function App() {
                     <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}><tr><th className="py-2">Lote / Romaneio</th>{isAdmin && <th className="py-2">Operador</th>}<th className="py-2">Data/Hora</th></tr></thead>
                     <tbody>
                       {leiturasPaginadas.length === 0 ? (<tr><td colSpan={isAdmin ? 3 : 2} className="text-muted py-4">Nenhuma leitura.</td></tr>) : (
-                        leiturasPaginadas.map((leitura, index) => {
-                          const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
-                          return (
-                            <React.Fragment key={index}>
-                              <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
-                                <td className="fw-bold text-primary text-start px-4">
-                                  <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
-                                  <span className="vp-mono">{leitura.codigo}</span>
-                                </td>
-                                {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
-                                <td>{leitura.dataHora}</td>
-                              </tr>
-                              {expandido && (<tr><td colSpan={isAdmin ? 3 : 2} className="p-0 border-0"><div className="p-3 bg-light text-start border-bottom small text-dark animate__animated animate__fadeIn"><div className="row g-3">
-                                <div className="col-12 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val fw-semibold text-dark">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div></div></div>
-                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val fw-semibold text-dark">{leitura.agrupador || '-'}</div></div></div>
-                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Romaneio</span><div className="vp-detail-val fw-semibold text-dark">{leitura.romaneio || '-'}</div></div></div>
-                                <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{leitura.endereco_lido || '-'}</div></div></div>
-                                <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val fw-semibold text-dark">{leitura.endereco_sap || '-'}</div></div></div>
-                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div></div>
-                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div></div>
-                                <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val fw-semibold text-dark">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div></div>
-                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val fw-semibold text-dark">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div></div>
-                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val fw-semibold text-dark">{leitura.rota || '-'}</div></div></div>
-                              </div></div></td></tr>)}
-                            </React.Fragment>
-                          );
-                        })
+                        Object.entries(leiturasPaginadas.reduce((acc, leitura) => {
+                          const dia = leitura.dataHora ? leitura.dataHora.substring(0, 10) : 'Data Desconhecida';
+                          const crachaStr = leitura.cracha || 'Desconhecido';
+                          const key = `${crachaStr}_${dia}`;
+                          if (!acc[key]) acc[key] = { nome: leitura.nome || crachaStr, dia: dia, leituras: [] };
+                          acc[key].leituras.push(leitura);
+                          return acc;
+                        }, {})).map(([key, grupo]) => (
+                          <React.Fragment key={key}>
+                            <tr className="table-secondary" onClick={() => toggleLoteExpandido(`grupo_${key}`)} style={{ cursor: 'pointer' }}>
+                              <td colSpan={isAdmin ? 3 : 2} className="text-start fw-bold text-dark px-4 py-2 border-bottom" style={{ backgroundColor: '#e9ecef' }}>
+                                <i className={`bi bi-chevron-${lotesExpandidos[`grupo_${key}`] ? 'down' : 'right'} me-2 text-primary`}></i>
+                                <i className="bi bi-person-badge me-2 text-primary"></i>
+                                {grupo.nome} <span className="ms-2 text-muted fw-normal" style={{ fontSize: '0.9em' }}>| <i className="bi bi-calendar3 ms-1 me-1"></i> {grupo.dia}</span> <span className="badge bg-primary rounded-pill ms-2">{grupo.leituras.length} leituras</span>
+                              </td>
+                            </tr>
+                            {lotesExpandidos[`grupo_${key}`] && grupo.leituras.map((leitura, index) => {
+                              const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
+                              return (
+                                <React.Fragment key={index}>
+                                  <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
+                                    <td className="fw-bold text-primary text-start px-4">
+                                      <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
+                                      <span className="vp-mono">{leitura.codigo}</span>
+                                    </td>
+                                    {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
+                                    <td>{leitura.dataHora}</td>
+                                  </tr>
+                                  {expandido && (<tr><td colSpan={isAdmin ? 3 : 2} className="p-0 border-0"><div className="p-3 bg-light text-start border-bottom small text-dark animate__animated animate__fadeIn"><div className="row g-3">
+                                    <div className="col-12 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val fw-semibold text-dark">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div></div></div>
+                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val fw-semibold text-dark">{leitura.agrupador || '-'}</div></div></div>
+                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Romaneio</span><div className="vp-detail-val fw-semibold text-dark">{leitura.romaneio || '-'}</div></div></div>
+                                    <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{leitura.endereco_lido || '-'}</div></div></div>
+                                    <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val fw-semibold text-dark">{leitura.endereco_sap || '-'}</div></div></div>
+                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div></div>
+                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div></div>
+                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val fw-semibold text-dark">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div></div>
+                                    <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val fw-semibold text-dark">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div></div>
+                                    <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val fw-semibold text-dark">{leitura.rota || '-'}</div></div></div>
+                                  </div></div></td></tr>)}
+                                </React.Fragment>
+                              );
+                            })}
+                          </React.Fragment>
+                        ))
                       )}
                     </tbody>
                   </table>
@@ -983,36 +1018,86 @@ function App() {
 
                 <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
                   <div className="vp-mobile-cards-list">
-                    {leiturasPaginadas.map((leitura, index) => {
-                      const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
-                      return (
-                        <div key={index} className={`vp-mobile-report-card ok ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
-                          <div className="vp-mobile-card-header">
-                            <span className="vp-mobile-card-lote">
-                              <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
-                              <i className="bi bi-box-seam me-1 text-primary"></i> 
-                              <span className="vp-mono">{leitura.codigo}</span>
-                            </span>
-                          </div>
-                          <div className="vp-mobile-card-body"><div className="vp-mobile-card-details"><div className="vp-detail-item"><span className="vp-detail-label">Data/Hora:</span><span className="vp-detail-value">{leitura.dataHora}</span></div>{isAdmin && <div className="vp-detail-item mt-1"><span className="vp-detail-label">Operador:</span><span className="vp-detail-value">{leitura.nome || leitura.cracha}</span></div>}</div>
-                            {expandido && (<div className="vp-mobile-card-extra border-top pt-2 mt-2">
-                              <div className="vp-detail-block mb-2"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div></div>
-                              <div className="row g-2 mb-2">
-                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.agrupador || '-'}</div></div></div>
-                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Filial</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.filial || '-'}</div></div></div>
-                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{leitura.rota !== '-' ? `Rota: ${leitura.rota} | ` : ''}{leitura.endereco_lido || '-'}</div></div></div>
-                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.endereco_sap || '-'}</div></div></div>
-                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div></div>
-                                <div className="col-6"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div></div>
-                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val small fw-semibold text-dark">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div></div>
-                                <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.rota || '-'}</div></div></div>
+                    {leiturasPaginadas.length === 0 ? (
+                        <div className="text-center text-muted p-4">Nenhuma leitura.</div>
+                    ) : (
+                        Object.entries(leiturasPaginadas.reduce((acc, leitura) => {
+                          const dia = leitura.dataHora ? leitura.dataHora.substring(0, 10) : 'Data Desconhecida';
+                          const crachaStr = leitura.cracha || 'Desconhecido';
+                          const key = `${crachaStr}_${dia}`;
+                          if (!acc[key]) acc[key] = { nome: leitura.nome || crachaStr, dia: dia, leituras: [] };
+                          acc[key].leituras.push(leitura);
+                          return acc;
+                        }, {})).map(([key, grupo]) => (
+                          <div key={key} className="mb-4">
+                            <div className="p-3 rounded mb-3 shadow-sm border bg-white position-relative overflow-hidden" onClick={() => toggleLoteExpandido(`grupo_${key}`)} style={{ cursor: 'pointer', transition: 'all 0.2s ease' }}>
+                              <div className="position-absolute start-0 top-0 bottom-0 bg-primary" style={{ width: '4px' }}></div>
+                              <div className="d-flex align-items-center w-100 ps-2">
+                                <div className="rounded-circle bg-light d-flex align-items-center justify-content-center me-3 border" style={{ width: '42px', height: '42px', flexShrink: 0 }}>
+                                  <i className="bi bi-person-fill text-secondary fs-5"></i>
+                                </div>
+                                <div className="flex-grow-1" style={{ minWidth: 0 }}>
+                                  <div className="fw-bold text-dark text-truncate mb-1" style={{ fontSize: '0.95rem' }}>
+                                    {grupo.nome}
+                                  </div>
+                                  <div className="d-flex align-items-center gap-2 flex-wrap">
+                                    <span className="badge bg-light border text-secondary fw-semibold rounded-pill px-2 py-1 d-flex align-items-center" style={{ fontSize: '0.7rem' }}>
+                                      <i className="bi bi-calendar3 me-1"></i>{grupo.dia}
+                                    </span>
+                                    <span className="badge bg-primary bg-opacity-10 text-primary fw-bold rounded-pill px-2 py-1" style={{ fontSize: '0.7rem' }}>
+                                      {grupo.leituras.length} leitura{grupo.leituras.length !== 1 ? 's' : ''}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="ms-2 text-muted" style={{ flexShrink: 0 }}>
+                                  <i className={`bi bi-chevron-${lotesExpandidos[`grupo_${key}`] ? 'up' : 'down'}`}></i>
+                                </div>
                               </div>
-                              <div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val small fw-semibold text-dark">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div>
-                            </div>)}
+                            </div>
+                            {lotesExpandidos[`grupo_${key}`] && grupo.leituras.map((leitura, index) => {
+                              const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
+                              return (
+                                <div key={index} className={`vp-mobile-report-card ok shadow-sm border ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer', padding: '1rem', marginBottom: '0.75rem', borderRadius: '0.75rem', backgroundColor: '#ffffff', position: 'relative' }}>
+                                  <div className="d-flex justify-content-between align-items-center mb-1">
+                                    <div className="d-flex align-items-center">
+                                      <i className="bi bi-box-seam me-2 text-primary"></i> 
+                                      <span className="vp-mono fw-bold text-dark fs-6">{leitura.codigo}</span>
+                                    </div>
+                                    <div className="text-muted small fw-semibold">
+                                      <i className="bi bi-clock me-1"></i>{leitura.dataHora.includes(' ') ? leitura.dataHora.split(' ')[1] : leitura.dataHora}
+                                    </div>
+                                  </div>
+                                  {!expandido && (
+                                    <div className="text-center mt-2 text-primary" style={{ fontSize: '0.75rem', opacity: 0.8 }}>
+                                      <i className="bi bi-chevron-down me-1"></i>Ver detalhes
+                                    </div>
+                                  )}
+                                  {expandido && (
+                                    <div className="vp-mobile-card-extra border-top pt-3 mt-3 animate__animated animate__fadeIn">
+                                      <div className="mb-3">
+                                        <div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Material & Descrição</div>
+                                        <div className="fw-semibold text-dark small">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div>
+                                      </div>
+                                      <div className="row g-3">
+                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Agrupador</div><div className="fw-semibold text-dark small">{leitura.agrupador || '-'}</div></div>
+                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Romaneio</div><div className="fw-semibold text-dark small">{leitura.romaneio || '-'}</div></div>
+                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Endereço Lido</div><div className="fw-bold text-primary small bg-primary bg-opacity-10 px-2 py-1 rounded d-inline-block">{leitura.endereco_lido || '-'}</div></div>
+                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Endereço SAP</div><div className="fw-semibold text-dark small">{leitura.endereco_sap || '-'}</div></div>
+                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Peso Líquido</div><div className="fw-semibold text-dark small">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div>
+                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Dimensões</div><div className="fw-semibold text-dark small">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div>
+                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Ordem Prod/Venda</div><div className="fw-semibold text-dark small">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div>
+                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Cliente</div><div className="fw-semibold text-dark small">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div>
+                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Rota</div><div className="fw-semibold text-dark small">{leitura.rota || '-'}</div></div>
+                                      </div>
+                                      <div className="text-center mt-3 text-muted border-top pt-2" style={{ fontSize: '0.75rem' }}><i className="bi bi-chevron-up me-1"></i>Recolher</div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
-                        </div>
-                      )
-                    })}
+                        ))
+                    )}
                   </div>
                 </div>
                 {totalPaginas > 1 && (<div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top"><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))} disabled={paginaAtual === 1}>Anterior</button><span className="small text-muted fw-semibold">Página {paginaCorrigida} de {totalPaginas}</span><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))} disabled={paginaAtual === totalPaginas}>Próxima</button></div>)}
