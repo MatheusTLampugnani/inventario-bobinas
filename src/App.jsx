@@ -58,6 +58,7 @@ function App() {
 
   // ESTADOS DA MÁQUINA DE INVENTÁRIO
   const [etapaInventario, setEtapaInventario] = useState('OCIOSO');
+  const [tipoContagem, setTipoContagem] = useState(() => sessionStorage.getItem('tipo_contagem') || null);
   const [modoInventario, setModoInventario] = useState(null);
   const [depositoAtual, setDepositoAtual] = useState('');
   const [gondolaAtual, setGondolaAtual] = useState('');
@@ -117,7 +118,9 @@ function App() {
     sessionStorage.setItem('lidas_bobinas', JSON.stringify(bobinasLidas));
     if (sessaoId) sessionStorage.setItem('sessao_id', sessaoId);
     else sessionStorage.removeItem('sessao_id');
-  }, [csvBobinas, bobinasLidas, sessaoId]);
+    if (tipoContagem) sessionStorage.setItem('tipo_contagem', tipoContagem);
+    else sessionStorage.removeItem('tipo_contagem');
+  }, [csvBobinas, bobinasLidas, sessaoId, tipoContagem]);
 
   useEffect(() => {
     if (crachaLogado && nomeLogado) {
@@ -466,7 +469,17 @@ function App() {
                 itensExtraidos.push({ tipo: 'lote', valor: itemEncontrado.lote });
             }
         } else {
-            itensExtraidos.push({ tipo: 'lote', valor: valorLimpo });
+            // Classifica de acordo com padrões conhecidos se não estiver no SAP
+            let tipoClassificado = 'lote'; // Fallback padrão
+            if (/^(RA|VA|MA|UV)\d{8}$/i.test(valorLimpo)) {
+                tipoClassificado = 'lote';
+            } else if (/^500\d{7}$/.test(valorLimpo)) {
+                tipoClassificado = 'romaneio';
+            } else {
+                // Se não identificado por formato estrito, alinha com a seleção ativa da sessão
+                tipoClassificado = tipoContagem === 'ROMANEIO' ? 'romaneio' : 'lote';
+            }
+            itensExtraidos.push({ tipo: tipoClassificado, valor: valorLimpo });
         }
       }
     }
@@ -484,7 +497,6 @@ function App() {
     return unicos;
   };
 
-  // LEITURA DE BOBINA / ROMANEIO
   const adicionarBobina = async (codigoCopia = null) => {
     const textoLido = (typeof codigoCopia === 'string' ? codigoCopia : codigo).trim();
     if (!textoLido) return;
@@ -496,6 +508,35 @@ function App() {
       setCodigo(''); return;
     }
 
+    const itensValidos = [];
+    const itensRejeitados = [];
+
+    for (const item of itensExtraidos) {
+      if (tipoContagem === 'LOTE' && item.tipo !== 'lote') {
+        itensRejeitados.push(item.valor);
+      } else if (tipoContagem === 'ROMANEIO' && item.tipo !== 'romaneio') {
+        itensRejeitados.push(item.valor);
+      } else {
+        itensValidos.push(item);
+      }
+    }
+
+    if (itensRejeitados.length > 0 && itensValidos.length === 0) {
+      abrirAlerta(
+        'Leitura Rejeitada', 
+        `Este inventário está configurado para contagem de ${tipoContagem === 'LOTE' ? 'Lotes' : 'Romaneios'}.\n\nCódigo(s) rejeitado(s) por incompatibilidade:\n${itensRejeitados.join(', ')}`
+      );
+      setCodigo('');
+      return;
+    }
+
+    if (itensRejeitados.length > 0) {
+      abrirAlerta(
+        'Aviso de Compatibilidade', 
+        `Alguns códigos foram descartados por não serem ${tipoContagem === 'LOTE' ? 'Lotes' : 'Romaneios'}:\n${itensRejeitados.join(', ')}`
+      );
+    }
+
     setCarregandoAcao(true);
 
     try {
@@ -505,7 +546,7 @@ function App() {
       let avisos = [];
       let insercoesNoBanco = [];
 
-      for (const item of itensExtraidos) {
+      for (const item of itensValidos) {
         const codigoLimpo = limparCodigo(item.valor);
         if (!codigoLimpo) continue;
 
@@ -585,7 +626,12 @@ function App() {
 
     arrayDeTextosLidos.forEach(texto => {
       const matches = processarEntradaMassa(texto);
-      if (matches.length > 0) lotesFormatados.push(...matches.map(m => m.valor));
+      const matchesValidos = matches.filter(m => {
+        if (tipoContagem === 'LOTE' && m.tipo !== 'lote') return false;
+        if (tipoContagem === 'ROMANEIO' && m.tipo !== 'romaneio') return false;
+        return true;
+      });
+      if (matchesValidos.length > 0) lotesFormatados.push(...matchesValidos.map(m => m.valor));
     });
 
     lotesFormatados = [...new Set(lotesFormatados)];
@@ -651,7 +697,7 @@ function App() {
   const limparDados = () => {
     abrirConfirmacao('Limpar Tela', 'Deseja limpar os dados da tela e iniciar uma nova contagem?', () => {
       setBobinasLidas([]); setCsvBobinas([]); setSessaoId(null); setEtapaInventario('OCIOSO'); setModoInventario(null);
-      setDepositoAtual(''); setGondolaAtual(''); setGavetaAtual('');
+      setDepositoAtual(''); setGondolaAtual(''); setGavetaAtual(''); setTipoContagem(null);
     });
   }
 
@@ -677,11 +723,11 @@ function App() {
       }, 'Outro Depósito', 'Encerrar Tudo');
     }
 
-    setModal(prev => ({ ...prev, onCancel: () => { setEtapaInventario('OCIOSO'); setModoInventario(null); setDepositoAtual(''); setGondolaAtual(''); setGavetaAtual(''); fecharModal(); } }));
+    setModal(prev => ({ ...prev, onCancel: () => { setEtapaInventario('OCIOSO'); setModoInventario(null); setDepositoAtual(''); setGondolaAtual(''); setGavetaAtual(''); setTipoContagem(null); fecharModal(); } }));
   };
 
   const encerrarInventarioLivre = () => {
-    abrirConfirmacao('Encerrar', 'Deseja parar de bipar e voltar ao início?', () => { setEtapaInventario('OCIOSO'); setModoInventario(null); setDepositoAtual(''); });
+    abrirConfirmacao('Encerrar', 'Deseja parar de bipar e voltar ao início?', () => { setEtapaInventario('OCIOSO'); setModoInventario(null); setDepositoAtual(''); setTipoContagem(null); });
   };
 
   // AUDITORIA E RELATÓRIO COM VALIDAÇÃO INTELIGENTE
@@ -1130,10 +1176,44 @@ function App() {
                 </div>
                 <h2 className="vp-title mb-4">Pronto para a Contagem</h2>
                 <div className="mx-auto" style={{ maxWidth: '300px' }}>
-                  <button className="vp-btn vp-btn-primary vp-btn-lg w-100 shadow-sm" onClick={() => setEtapaInventario('ESCOLHER_MODO')}>
+                  <button className="vp-btn vp-btn-primary vp-btn-lg w-100 shadow-sm" onClick={() => setEtapaInventario('ESCOLHER_TIPO_CONTAGEM')}>
                     <i className="bi bi-play-circle-fill"></i> Iniciar Inventário
                   </button>
                 </div>
+              </div>
+            )}
+
+            {etapaInventario === 'ESCOLHER_TIPO_CONTAGEM' && (
+              <div className="text-center py-2 animate__animated animate__zoomIn animate__faster">
+                <span className="vp-micro-label mb-3">Configuração inicial</span>
+                <h3 className="vp-title mb-4">O inventário será por Lote ou por Romaneio?</h3>
+                <div className="row g-3 mb-4">
+                  <div className="col-12 col-md-6">
+                    <button 
+                      className="vp-btn vp-btn-outline p-4 d-flex flex-column align-items-center justify-content-center w-100 h-100 vp-modo-card" 
+                      onClick={() => { setTipoContagem('LOTE'); setEtapaInventario('ESCOLHER_MODO'); }}
+                    >
+                      <div className="bg-light rounded-circle p-3 mb-3">
+                        <i className="bi bi-box-seam fs-3 vp-modo-icon" style={{ color: 'var(--vp-primary)' }}></i>
+                      </div>
+                      <span className="fw-bold fs-5 text-dark">Por Lote</span>
+                      <span className="small text-muted mt-2 fw-normal text-wrap">Validar e registrar apenas lotes de bobinas.</span>
+                    </button>
+                  </div>
+                  <div className="col-12 col-md-6">
+                    <button 
+                      className="vp-btn vp-btn-outline p-4 d-flex flex-column align-items-center justify-content-center w-100 h-100 vp-modo-card" 
+                      onClick={() => { setTipoContagem('ROMANEIO'); setEtapaInventario('ESCOLHER_MODO'); }}
+                    >
+                      <div className="bg-light rounded-circle p-3 mb-3">
+                        <i className="bi bi-file-earmark-text fs-3 text-secondary vp-modo-icon"></i>
+                      </div>
+                      <span className="fw-bold fs-5 text-dark">Por Romaneio</span>
+                      <span className="small text-muted mt-2 fw-normal text-wrap">Validar e registrar apenas romaneios.</span>
+                    </button>
+                  </div>
+                </div>
+                <button className="vp-btn vp-btn-ghost-danger w-100 text-decoration-none" onClick={() => { setEtapaInventario('OCIOSO'); setTipoContagem(null); }}>Cancelar</button>
               </div>
             )}
 
@@ -1224,6 +1304,14 @@ function App() {
                     ) : (
                       <h4 className="vp-title text-secondary mb-0 mt-1"><i className="bi bi-upc-scan"></i> Bipagem Livre</h4>
                     )}
+                    {tipoContagem && (
+                      <div className="mt-2">
+                        <span className={`badge ${tipoContagem === 'LOTE' ? 'bg-primary' : 'bg-success'} rounded-pill px-3 py-1 fw-bold shadow-sm`} style={{ fontSize: '0.8rem', letterSpacing: '0.3px' }}>
+                          <i className={tipoContagem === 'LOTE' ? 'bi bi-box-seam me-1' : 'bi bi-file-earmark-text me-1'}></i>
+                          Contagem por: {tipoContagem}
+                        </span>
+                      </div>
+                    )}
                   </div>
                   {modoInventario === 'COM_ENDERECO' ? (
                     <button className="vp-btn vp-btn-success" onClick={finalizarGaveta}>
@@ -1270,16 +1358,18 @@ function App() {
                     </div>
 
                     <div className="row g-2">
-                      <div className="col-12 col-sm-6">
+                      <div className={modoInventario === 'SEM_ENDERECO' ? "col-12 col-sm-6" : "col-12"}>
                         <button className="vp-btn vp-btn-outline-danger w-100" onClick={() => setUsandoCamera(true)} disabled={carregandoAcao}>
                           <i className="bi bi-camera-fill fs-5"></i> Câmera Celular
                         </button>
                       </div>
-                      <div className="col-12 col-sm-6">
-                        <button className="vp-btn vp-btn-outline-warning w-100" onClick={() => setUsandoDrone(true)} disabled={carregandoAcao}>
-                          <i className="bi bi-send-check-fill fs-5"></i> Processar Drone
-                        </button>
-                      </div>
+                      {modoInventario === 'SEM_ENDERECO' && (
+                        <div className="col-12 col-sm-6">
+                          <button className="vp-btn vp-btn-outline-warning w-100" onClick={() => setUsandoDrone(true)} disabled={carregandoAcao}>
+                            <i className="bi bi-send-check-fill fs-5"></i> Processar Drone
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
