@@ -59,45 +59,7 @@ print(f"[IA] Inicializando sessão ONNX Runtime com o modelo: {caminho_modelo}")
 session = ort.InferenceSession(caminho_modelo, providers=['CPUExecutionProvider'])
 input_name = session.get_inputs()[0].name
 
-# Regras de captura de lote da Videplast e Romaneio Logístico
-PADRAO_VL2LT = re.compile(r'VL2LT(.*?)KG')
-PADRAO_ROMANEIO = re.compile(r'\(7\)(.*?)\(8\)')
-
-# Novos formatos de Lote e Romaneio identificados (Exatamente 10 caracteres)
-PADRAO_LOTE_RA = re.compile(r'^(RA|VA|MA|UV)\d{8}$', re.IGNORECASE)     # Lote: RA/VA/MA/UV seguido de exatamente 8 dígitos (total 10 chars)
-PADRAO_ROMANEIO_NUM = re.compile(r'^500\d{7}$')             # Romaneio: 500 seguido de exatamente 7 dígitos (ex: 5001810083)
-
-def extrair_conteudo_qr(texto_bruto):
-    """Aplica a regra de negócio para extrair o código limpo (Lote ou Romaneio) e descarta ruídos."""
-    try:
-        if isinstance(texto_bruto, bytes):
-            texto_limpo = texto_bruto.decode('utf-8').upper().strip()
-        else:
-            texto_limpo = str(texto_bruto).upper().strip()
-    except Exception:
-        texto_limpo = str(texto_bruto).upper().strip()
-        
-    # 1. Tenta encontrar o Lote Padrão original (VL2LT...KG)
-    match_lote = PADRAO_VL2LT.search(texto_limpo)
-    if match_lote:
-        return match_lote.group(1).strip()
-        
-    # 2. Tenta encontrar o Romaneio GS1 original ((7)...(8))
-    match_romaneio = PADRAO_ROMANEIO.search(texto_limpo)
-    if match_romaneio:
-        return match_romaneio.group(1).strip()
-        
-    # 3. Tenta encontrar o novo formato de Lote (RA + dígitos, ex: RA03199248)
-    if PADRAO_LOTE_RA.match(texto_limpo):
-        return texto_limpo
-        
-    # 4. Tenta encontrar o novo formato de Romaneio (número iniciado com 5, ex: 5001810083)
-    if PADRAO_ROMANEIO_NUM.match(texto_limpo):
-        return texto_limpo
-        
-    # Se não corresponder a nenhuma das regras de negócio válidas, descartamos retornando None
-    return None
-
+# Retorna o texto bruto diretamente
 def processar_recorte(crop):
     """Executa a decodificação ZXing em um recorte focal (crop) em tons de cinza."""
     try:
@@ -112,9 +74,9 @@ def processar_recorte(crop):
         codigos_recorte = []
         for r in resultados:
             if r.valid and r.text:
-                codigo_limpo = extrair_conteudo_qr(r.text)
-                if codigo_limpo:
-                    codigos_recorte.append(codigo_limpo)
+                texto_limpo = r.text.strip()
+                if texto_limpo and texto_limpo not in codigos_recorte:
+                    codigos_recorte.append(texto_limpo)
         return codigos_recorte
     except Exception as e:
         print(f"[ZXing Error] Falha ao decodificar recorte: {e}")
@@ -142,13 +104,13 @@ def detectar_e_decodificar(frame, executor):
     # YOLOv8 outputs: 4 coordenadas de bounding box (x,y,w,h) + scores para cada classe
     num_classes = output.shape[0] - 4
     
-    # Filtragem das detecções baseada em threshold de confiança
+    # Filtragem das detecções baseada em threshold de confiança (reduzido para 0.15 para capturar caixas com menor confiança)
     for i in range(output.shape[1]):
         classes_scores = output[4:, i]
         class_id = np.argmax(classes_scores)
         confidence = classes_scores[class_id]
         
-        if confidence > 0.25:
+        if confidence > 0.15:
             x_center, y_center, w, h = output[0:4, i]
             
             # Escala as coordenadas de volta para o tamanho original do frame
@@ -160,11 +122,25 @@ def detectar_e_decodificar(frame, executor):
             boxes.append([x_min, y_min, box_w, box_h])
             confidences.append(float(confidence))
             
+    codigos_encontrados = []
+    
+    # OTIMIZAÇÃO: Tenta ler o frame inteiro como backup para códigos de barra nítidos que o YOLO possa ignorar
+    try:
+        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        resultados_full = zxingcpp.read_barcodes(frame_gray)
+        for r in resultados_full:
+            if r.valid and r.text:
+                texto_limpo = r.text.strip()
+                if texto_limpo and texto_limpo not in codigos_encontrados:
+                    codigos_encontrados.append(texto_limpo)
+    except Exception:
+        pass
+
     if not boxes:
-        return []
+        return codigos_encontrados
         
     # 3. Non-Maximum Suppression (NMS) para eliminar caixas sobrepostas redundantes
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.25, nms_threshold=0.45)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.15, nms_threshold=0.45)
     
     recortes = []
     if len(indices) > 0:
@@ -185,15 +161,11 @@ def detectar_e_decodificar(frame, executor):
             if crop is not None and crop.size > 0:
                 recortes.append(crop)
                 
-    if not recortes:
-        return []
-        
-    # 4. Decodificação em paralelo de todos os recortes de códigos encontrados no frame
-    resultados_paralelos = executor.map(processar_recorte, recortes)
-    
-    codigos_encontrados = []
-    for res in resultados_paralelos:
-        codigos_encontrados.extend(res)
+    if recortes:
+        # 4. Decodificação em paralelo de todos os recortes de códigos encontrados no frame
+        resultados_paralelos = executor.map(processar_recorte, recortes)
+        for res in resultados_paralelos:
+            codigos_encontrados.extend(res)
         
     return codigos_encontrados
 
@@ -211,8 +183,8 @@ async def processar_video_drone(file: UploadFile = File(...)):
     codigos_encontrados = set()
     
     fps_video = cap.get(cv2.CAP_PROP_FPS) or 30
-    # Processa cerca de 2 frames por segundo de vídeo (equilíbrio ideal entre velocidade e cobertura)
-    frames_para_pular = max(1, int(fps_video / 2))
+    # Processa cerca de 5 frames por segundo de vídeo (aumentado de 2 para 5 para evitar perda de frames curtos)
+    frames_para_pular = max(1, int(fps_video / 5))
     
     frame_anterior_cinza = None
     
@@ -237,8 +209,9 @@ async def processar_video_drone(file: UploadFile = File(...)):
                 diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
                 mean_diff = np.mean(diff) / 255.0
                 
-                # Se a variação de pixels do vídeo for menor que 2% (drone parado ou sem novos elementos), pula
-                if mean_diff < 0.02:
+                # Se a variação de pixels do vídeo for menor que 0.5% (drone parado ou sem novos elementos), pula.
+                # Reduzido de 2% para 0.5% para detectar movimentos sutis do drone.
+                if mean_diff < 0.005:
                     continue
                     
             frame_anterior_cinza = frame_cinza
