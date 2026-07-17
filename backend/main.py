@@ -1,17 +1,13 @@
 # Instalação das dependências:
-# pip install opencv-python fastapi uvicorn onnxruntime zxing-cpp numpy requests python-multipart
+# pip install opencv-python fastapi uvicorn zxing-cpp numpy python-multipart
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import cv2
 import shutil
 import os
-import re
 import numpy as np
-import requests
-import onnxruntime as ort
 import zxingcpp
-from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI()
 
@@ -23,151 +19,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configurações de caminhos e modelos
 DIR_ATUAL = os.path.dirname(os.path.abspath(__file__))
-MODELO_ESPECIALIZADO = os.path.join(DIR_ATUAL, "yolov8n-obc.onnx")
-MODELO_FALLBACK = os.path.join(DIR_ATUAL, "yolov8n.onnx")
-URL_DOWNLOAD_FALLBACK = "https://huggingface.co/Kalray/yolov8/resolve/main/yolov8n.onnx"
 
-def garantir_modelo():
-    """Garante que o modelo YOLOv8-ONNX exista localmente no disco."""
-    if os.path.exists(MODELO_ESPECIALIZADO):
-        print(f"[IA] Usando modelo especializado em códigos de barra: {MODELO_ESPECIALIZADO}")
-        return MODELO_ESPECIALIZADO
-        
-    if os.path.exists(MODELO_FALLBACK):
-        print(f"[IA] Usando modelo YOLOv8 padrão como fallback: {MODELO_FALLBACK}")
-        return MODELO_FALLBACK
-        
-    print(f"[IA] Modelo não encontrado localmente. Baixando o fallback {MODELO_FALLBACK} de {URL_DOWNLOAD_FALLBACK}...")
+def gerar_variacoes_imagem(frame_cinza):
+    """Gera variações de imagem (filtros) para maximizar a decodificação em condições adversas."""
+    variacoes = [frame_cinza]
+    
+    # Variação 2: Threshold Adaptativo (ótimo para sombras e curvas)
     try:
-        response = requests.get(URL_DOWNLOAD_FALLBACK, stream=True)
-        response.raise_for_status()
-        with open(MODELO_FALLBACK, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"[IA] Download concluído com sucesso: {MODELO_FALLBACK}")
-        return MODELO_FALLBACK
+        adaptativo = cv2.adaptiveThreshold(
+            frame_cinza, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
+        )
+        variacoes.append(adaptativo)
     except Exception as e:
-        print(f"[ERROR] Falha ao baixar o modelo YOLOv8: {e}")
-        # Mesmo com erro, retorna o caminho do fallback para tentar carregar caso exista ou levantar erro apropriado
-        return MODELO_FALLBACK
-
-# Inicializa o modelo YOLOv8 ONNX
-caminho_modelo = garantir_modelo()
-print(f"[IA] Inicializando sessão ONNX Runtime com o modelo: {caminho_modelo}")
-session = ort.InferenceSession(caminho_modelo, providers=['CPUExecutionProvider'])
-input_name = session.get_inputs()[0].name
-
-# Retorna o texto bruto diretamente
-def processar_recorte(crop):
-    """Executa a decodificação ZXing em um recorte focal (crop) em tons de cinza."""
+        print(f"[Filtros] Erro ao gerar threshold adaptativo: {e}")
+        
+    # Variação 3: CLAHE (Equalização adaptativa para contraste e brilho)
     try:
-        if crop is None or crop.size == 0:
-            return []
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        contraste = clahe.apply(frame_cinza)
+        variacoes.append(contraste)
         
-        # Converte para tons de cinza para melhor decodificação
-        crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        
-        # ZXing-C++ é muito mais robusto e rápido
-        resultados = zxingcpp.read_barcodes(crop_gray)
-        codigos_recorte = []
-        for r in resultados:
-            if r.valid and r.text:
-                texto_limpo = r.text.strip()
-                if texto_limpo and texto_limpo not in codigos_recorte:
-                    codigos_recorte.append(texto_limpo)
-        return codigos_recorte
+        # Variação 4: Otsu sobre o CLAHE (binarização limpa)
+        try:
+            _, otsu = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            variacoes.append(otsu)
+        except Exception as e:
+            print(f"[Filtros] Erro ao gerar Otsu: {e}")
     except Exception as e:
-        print(f"[ZXing Error] Falha ao decodificar recorte: {e}")
-        return []
-
-def detectar_e_decodificar(frame, executor):
-    """Detecta as coordenadas dos códigos de barras com YOLOv8 e decodifica os recortes via ZXing."""
-    altura_orig, largura_orig = frame.shape[:2]
-    
-    # 1. Pré-processamento da imagem para o YOLO (640x640)
-    img_640 = cv2.resize(frame, (640, 640))
-    img_rgb = cv2.cvtColor(img_640, cv2.COLOR_BGR2RGB)
-    
-    # Normalização e transposição para CHW
-    input_data = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
-    input_data = np.expand_dims(input_data, axis=0) # Batch size = 1
-    
-    # 2. Inferência no ONNX Runtime
-    outputs = session.run(None, {input_name: input_data})
-    output = outputs[0][0] # shape: (C, 8400)
-    
-    boxes = []
-    confidences = []
-    
-    # YOLOv8 outputs: 4 coordenadas de bounding box (x,y,w,h) + scores para cada classe
-    num_classes = output.shape[0] - 4
-    
-    # Filtragem das detecções baseada em threshold de confiança (reduzido para 0.15 para capturar caixas com menor confiança)
-    for i in range(output.shape[1]):
-        classes_scores = output[4:, i]
-        class_id = np.argmax(classes_scores)
-        confidence = classes_scores[class_id]
+        print(f"[Filtros] Erro ao gerar CLAHE: {e}")
         
-        if confidence > 0.15:
-            x_center, y_center, w, h = output[0:4, i]
-            
-            # Escala as coordenadas de volta para o tamanho original do frame
-            x_min = int((x_center - w / 2) * (largura_orig / 640.0))
-            y_min = int((y_center - h / 2) * (altura_orig / 640.0))
-            box_w = int(w * (largura_orig / 640.0))
-            box_h = int(h * (altura_orig / 640.0))
-            
-            boxes.append([x_min, y_min, box_w, box_h])
-            confidences.append(float(confidence))
-            
-    codigos_encontrados = []
-    
-    # OTIMIZAÇÃO: Tenta ler o frame inteiro como backup para códigos de barra nítidos que o YOLO possa ignorar
+    return variacoes
+
+def decodificar_frame(frame):
+    """Aplica os filtros de imagem e lê todos os códigos presentes no frame via ZXing."""
+    codigos_do_frame = []
     try:
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        resultados_full = zxingcpp.read_barcodes(frame_gray)
-        for r in resultados_full:
-            if r.valid and r.text:
-                texto_limpo = r.text.strip()
-                if texto_limpo and texto_limpo not in codigos_encontrados:
-                    codigos_encontrados.append(texto_limpo)
-    except Exception:
-        pass
-
-    if not boxes:
-        return codigos_encontrados
         
-    # 3. Non-Maximum Suppression (NMS) para eliminar caixas sobrepostas redundantes
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.15, nms_threshold=0.45)
-    
-    recortes = []
-    if len(indices) > 0:
-        flat_indices = indices.flatten() if hasattr(indices, 'flatten') else indices
-        for idx in flat_indices:
-            x_min, y_min, w, h = boxes[idx]
-            
-            # Adiciona padding focal de 10% nas bordas
-            pad_w = int(w * 0.1)
-            pad_h = int(h * 0.1)
-            
-            x_start = max(0, x_min - pad_w)
-            y_start = max(0, y_min - pad_h)
-            x_end = min(largura_orig, x_min + w + pad_w)
-            y_end = min(altura_orig, y_min + h + pad_h)
-            
-            crop = frame[y_start:y_end, x_start:x_end]
-            if crop is not None and crop.size > 0:
-                recortes.append(crop)
-                
-    if recortes:
-        # 4. Decodificação em paralelo de todos os recortes de códigos encontrados no frame
-        resultados_paralelos = executor.map(processar_recorte, recortes)
-        for res in resultados_paralelos:
-            codigos_encontrados.extend(res)
+        # Gera variações do frame
+        variacoes = gerar_variacoes_imagem(frame_gray)
         
-    return codigos_encontrados
+        # Tenta decodificar cada variação usando zxingcpp
+        for img in variacoes:
+            try:
+                resultados = zxingcpp.read_barcodes(img)
+                for r in resultados:
+                    if r.valid and r.text:
+                        texto_limpo = r.text.strip()
+                        if texto_limpo and texto_limpo not in codigos_do_frame:
+                            codigos_do_frame.append(texto_limpo)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[ZXing Error] Erro ao processar frame: {e}")
+        
+    return codigos_do_frame
 
 @app.post("/api/processar-drone")
 async def processar_video_drone(file: UploadFile = File(...)):
@@ -183,43 +90,38 @@ async def processar_video_drone(file: UploadFile = File(...)):
     codigos_encontrados = set()
     
     fps_video = cap.get(cv2.CAP_PROP_FPS) or 30
-    # Processa cerca de 5 frames por segundo de vídeo (aumentado de 2 para 5 para evitar perda de frames curtos)
+    # Processa cerca de 5 frames por segundo de vídeo (equilíbrio ideal entre velocidade e cobertura)
     frames_para_pular = max(1, int(fps_video / 5))
     
     frame_anterior_cinza = None
     
-    # ThreadPoolExecutor com workers para processamento assíncrono em multi-core
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        frame_count = cap.get(cv2.CAP_PROP_POS_FRAMES)
+        if frame_count % frames_para_pular != 0:
+            continue
+        
+        # Filtro de movimento de frames simples
+        frame_pequeno = cv2.resize(frame, (256, 256))
+        frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
+        
+        if frame_anterior_cinza is not None:
+            diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
+            mean_diff = np.mean(diff) / 255.0
             
-            frame_count = cap.get(cv2.CAP_PROP_POS_FRAMES)
-            if frame_count % frames_para_pular != 0:
+            # Pula frames com movimento irrelevante (menos de 0.5% de variação de pixels)
+            if mean_diff < 0.005:
                 continue
-            
-            # Filtro de diferença de frames simples para pular trechos estáticos/redundantes
-            # Redimensiona para uma escala pequena (256x256) para que a comparação seja instantânea
-            frame_pequeno = cv2.resize(frame, (256, 256))
-            frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
-            
-            if frame_anterior_cinza is not None:
-                # Calcula a diferença absoluta média das intensidades dos pixels (0.0 a 1.0)
-                diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
-                mean_diff = np.mean(diff) / 255.0
                 
-                # Se a variação de pixels do vídeo for menor que 0.5% (drone parado ou sem novos elementos), pula.
-                # Reduzido de 2% para 0.5% para detectar movimentos sutis do drone.
-                if mean_diff < 0.005:
-                    continue
-                    
-            frame_anterior_cinza = frame_cinza
-            
-            # Executa a inteligência de localização e decodificação focal
-            novos_codigos = detectar_e_decodificar(frame, executor)
-            for cod in novos_codigos:
-                codigos_encontrados.add(cod)
+        frame_anterior_cinza = frame_cinza
+        
+        # Decodifica o frame aplicando os filtros
+        novos_codigos = decodificar_frame(frame)
+        for cod in novos_codigos:
+            codigos_encontrados.add(cod)
 
     cap.release()
     try:
