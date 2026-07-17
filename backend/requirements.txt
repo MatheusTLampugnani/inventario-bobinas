@@ -1,0 +1,6 @@
+fastapi==0.139.0
+uvicorn==0.51.0
+opencv-python-headless==4.11.0.86
+zxing-cpp==3.1.0
+numpy==2.5.1
+python-multipart==0.0.32
