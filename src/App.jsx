@@ -698,6 +698,13 @@ function App() {
             return limparCodigo(c.codigo) === codigoLimpo;
           }
         });
+
+        // Se for Romaneio e a planilha SAP estiver carregada, rejeita códigos estranhos que não pertencem a ela
+        if (tipoContagem === 'ROMANEIO' && csvBobinas.length > 0 && !bobinaSAP) {
+            avisos.push(`❌ O Romaneio ${codigoLimpo} não pertence a esta planilha SAP.`);
+            continue;
+        }
+
         const identificadorFinal = bobinaSAP ? bobinaSAP.codigo : codigoLimpo;
 
         if (listaAtualizada.some(b => b.codigo === identificadorFinal)) {
@@ -781,6 +788,12 @@ function App() {
       const matchesValidos = matches.filter(m => {
         if (tipoContagem === 'LOTE' && m.tipo !== 'lote') return false;
         if (tipoContagem === 'ROMANEIO' && m.tipo !== 'romaneio') return false;
+        
+        // Se for Romaneio e a planilha estiver carregada, o código precisa constar nela
+        if (tipoContagem === 'ROMANEIO' && csvBobinas.length > 0) {
+          const existeNoSap = csvBobinas.some(c => limparCodigo(c.romaneio) === m.valor);
+          if (!existeNoSap) return false;
+        }
         return true;
       });
       if (matchesValidos.length > 0) lotesFormatados.push(...matchesValidos.map(m => m.valor));
