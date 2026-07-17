@@ -602,7 +602,15 @@ function App() {
           continue;
         }
 
-
+        // 2. Se for um termo único inteiramente numérico (ex: romaneio digitado diretamente ou bipado)
+        const palavras = linha.split(/[\s,;\-\/]+/).filter(Boolean);
+        if (palavras.length === 1) {
+          const termoUnico = palavras[0];
+          const valorLimpo = removerZeros(termoUnico);
+          if (valorLimpo && /^\d+$/.test(valorLimpo) && valorLimpo.length >= 6 && valorLimpo.length <= 12) {
+            itensExtraidos.push({ tipo: 'romaneio', valor: valorLimpo });
+          }
+        }
       }
     }
     
