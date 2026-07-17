@@ -21,8 +21,18 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         formData.append("file", arquivo);
 
         try {
-            // Detecta automaticamente: local usa localhost, produção usa a URL do Render
-            const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+            // Se houver variável de ambiente (como no Render), usa ela.
+            // Caso contrário, detecta o hostname atual para permitir conexões locais (como de um celular na mesma Wi-Fi).
+            let API_URL = import.meta.env.VITE_API_URL;
+            if (!API_URL) {
+                const hostname = window.location.hostname;
+                if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                    API_URL = "http://localhost:8000";
+                } else {
+                    API_URL = `http://${hostname}:8000`;
+                }
+            }
+
             setStatus('Analisando imagens (Visão Computacional)...');
             const resposta = await fetch(`${API_URL}/api/processar-drone`, {
                 method: "POST",
