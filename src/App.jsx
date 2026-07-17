@@ -248,7 +248,17 @@ function App() {
       if (leituras) {
         const listaGlobal = leituras.map(b => {
           const dono = crachas?.find(c => c.id === b.cracha_leitura);
-          const dadosSap = sapBanco?.find(s => s.lote === b.lote || (s.romaneio && s.romaneio === b.lote)) || csvBobinas.find(c => c.codigo === b.lote);
+          const dadosSap = sapBanco?.find(s => {
+            if (b.romaneio && b.romaneio !== '-') {
+              return s.romaneio === b.romaneio;
+            }
+            return s.lote === b.lote;
+          }) || csvBobinas.find(c => {
+            if (b.romaneio && b.romaneio !== '-') {
+              return c.romaneio === b.romaneio;
+            }
+            return c.codigo === b.lote;
+          });
           const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
           let dataFormatada = '-';
           if (dataOriginal) {
@@ -681,10 +691,13 @@ function App() {
         const codigoLimpo = limparCodigo(item.valor);
         if (!codigoLimpo) continue;
 
-        const bobinaSAP = csvBobinas.find(c => 
-            limparCodigo(c.codigo) === codigoLimpo || 
-            limparCodigo(c.romaneio) === codigoLimpo
-        );
+        const bobinaSAP = csvBobinas.find(c => {
+          if (tipoContagem === 'ROMANEIO') {
+            return limparCodigo(c.romaneio) === codigoLimpo;
+          } else {
+            return limparCodigo(c.codigo) === codigoLimpo;
+          }
+        });
         const identificadorFinal = bobinaSAP ? bobinaSAP.codigo : codigoLimpo;
 
         if (listaAtualizada.some(b => b.codigo === identificadorFinal)) {
@@ -798,7 +811,13 @@ function App() {
       for (const lote of lotesFormatados) {
         if (!lote) continue;
         
-        const bobinaSAP = csvBobinas.find(c => c.codigo === lote || c.romaneio === lote);
+        const bobinaSAP = csvBobinas.find(c => {
+          if (tipoContagem === 'ROMANEIO') {
+            return c.romaneio === lote;
+          } else {
+            return c.codigo === lote;
+          }
+        });
         const identificadorFinal = bobinaSAP ? bobinaSAP.codigo : lote;
 
         if (listaAtualizada.some(b => b.codigo === identificadorFinal)) continue;
@@ -879,7 +898,12 @@ function App() {
     let relatorio = [];
 
     bobinasLidas.forEach(b => {
-      const bobinaSAP = csvBobinas.find(c => c.codigo === b.codigo);
+      const bobinaSAP = csvBobinas.find(c => {
+        if (b.romaneio && b.romaneio !== '-') {
+          return c.romaneio === b.romaneio;
+        }
+        return c.codigo === b.codigo;
+      });
       const isOk = !!bobinaSAP;
       const filialFinal = b.filial || (bobinaSAP ? bobinaSAP.filial : null) || determinarFilial(b.codigo) || '-';
 
