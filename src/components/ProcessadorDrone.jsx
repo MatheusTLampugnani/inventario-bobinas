@@ -21,9 +21,10 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         formData.append("file", arquivo);
 
         try {
-            // Se o Python estiver rodando no mesmo PC, a URL será esta:
+            // Detecta automaticamente: local usa localhost, produção usa a URL do Render
+            const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
             setStatus('Analisando imagens (Visão Computacional)...');
-            const resposta = await fetch("http://localhost:8000/api/processar-drone", {
+            const resposta = await fetch(`${API_URL}/api/processar-drone`, {
                 method: "POST",
                 body: formData,
             });
