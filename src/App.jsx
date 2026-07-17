@@ -24,10 +24,15 @@ const obterIniciais = (nome) => {
 const determinarFilial = (lote) => {
   if (!lote) return null;
   const prefixo = lote.toUpperCase().substring(0, 2);
-  if (prefixo === 'VA') return '1001';
-  if (prefixo === 'RA') return '1005';
   if (prefixo === 'MA') return '1003';
-  return null;
+  if (prefixo === 'RA') return '1005';
+  if (prefixo === 'UA' || prefixo === 'UV') return '1006';
+  if (prefixo === 'TA') return '1007';
+  if (prefixo === 'ZA') return '1009';
+  if (prefixo === 'FA') return '1010';
+  
+  // Qualquer outro formato de lote (ou prefixo VA) assume-se como filial de Videira (1001)
+  return '1001';
 };
 
 const removerZeros = (val) => {
@@ -135,17 +140,23 @@ function App() {
   }, [crachaLogado, nomeLogado, isAdmin]);
 
   useEffect(() => {
-    if (etapaInventario === 'BIPANDO' && inputRef.current && !modal.show && !showConferencia && !usandoCamera) {
-      inputRef.current.focus();
+    if (etapaInventario === 'BIPANDO' && !modal.show && !showConferencia && !usandoCamera) {
+      const timer = setTimeout(() => {
+        if (inputRef.current) inputRef.current.focus();
+      }, 150);
+      return () => clearTimeout(timer);
     } else if (etapaInventario === 'INFORMAR_ENDERECO') {
-      const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
-      if (depInfo && depInfo.requerEndereco) {
-        if (!gondolaAtual && gondolaInputRef.current) {
-          gondolaInputRef.current.focus();
-        } else if (gavetaInputRef.current) {
-          gavetaInputRef.current.focus();
+      const timer = setTimeout(() => {
+        const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
+        if (depInfo && depInfo.requerEndereco) {
+          if (!gondolaAtual && gondolaInputRef.current) {
+            gondolaInputRef.current.focus();
+          } else if (gavetaInputRef.current) {
+            gavetaInputRef.current.focus();
+          }
         }
-      }
+      }, 150);
+      return () => clearTimeout(timer);
     }
   }, [etapaInventario, modal.show, showConferencia, usandoCamera, depositoAtual, gondolaAtual, depositosDisponiveis]);
 
@@ -154,12 +165,20 @@ function App() {
     setLotesExpandidos({});
   }, [conferenciaFilters, conferenciaSort]);
 
-  const fecharModal = () => setModal({ ...modal, show: false });
+  const fecharModal = () => {
+    setModal(prev => ({ ...prev, show: false }));
+    setTimeout(() => {
+      if (etapaInventario === 'BIPANDO' && inputRef.current) {
+        inputRef.current.focus();
+      }
+    }, 150);
+  };
   const abrirAlerta = (titulo, message) => setModal({ show: true, title: titulo, message: message, type: 'alert', onConfirm: null });
-  const abrirConfirmacao = (titulo, message, acaoConfirmar, confirmText = 'Sim', cancelText = 'Cancelar') => {
+  const abrirConfirmacao = (titulo, message, acaoConfirmar, confirmText = 'Sim', cancelText = 'Cancelar', acaoCancelar = null) => {
     setModal({
       show: true, title: titulo, message: message, type: 'confirm', confirmText, cancelText,
-      onConfirm: () => { acaoConfirmar(); fecharModal(); }
+      onConfirm: () => { acaoConfirmar(); fecharModal(); },
+      onCancel: () => { if (acaoCancelar) acaoCancelar(); fecharModal(); }
     });
   }
 
@@ -229,7 +248,7 @@ function App() {
       if (leituras) {
         const listaGlobal = leituras.map(b => {
           const dono = crachas?.find(c => c.id === b.cracha_leitura);
-          const dadosSap = sapBanco?.find(s => s.lote === b.lote) || csvBobinas.find(c => c.codigo === b.lote);
+          const dadosSap = sapBanco?.find(s => s.lote === b.lote || (s.romaneio && s.romaneio === b.lote)) || csvBobinas.find(c => c.codigo === b.lote);
           const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
           let dataFormatada = '-';
           if (dataOriginal) {
@@ -262,6 +281,140 @@ function App() {
     } catch (err) { console.error(err); } finally { setCarregandoAcao(false); }
   };
 
+  const finalizarImportacao = async (linhas, idxCabecalho, separator, headersLimpos, modoEscolhido) => {
+    try {
+      setCarregandoAcao(true);
+      const parseCSVLine = (line) => {
+        let result = []; let current = ''; let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          let char = line[i];
+          if (char === '"') {
+            if (inQuotes && line[i + 1] === '"') { current += '"'; i++; } else { inQuotes = !inQuotes; }
+          } else if (char === separator && !inQuotes) { result.push(current); current = ''; } else { current += char; }
+        }
+        result.push(current); return result.map(val => val.trim());
+      };
+
+      const getIdx = (termo) => headersLimpos.indexOf(termo);
+
+      const idxPosicao = getIdx('posicao'); 
+      const idxLote = getIdx('lote'); 
+      const idxRomaneio = getIdx('romaneio'); 
+      const idxMaterial = getIdx('material');
+      const idxDescricao = getIdx('descmaterial') !== -1 ? getIdx('descmaterial') : getIdx('descricao'); 
+      const idxLargura = getIdx('largura');
+      const idxEspessura = getIdx('espessura');
+      const idxDeposito = getIdx('deposito');
+      const idxCentro = getIdx('centro');
+      const idxGondola = getIdx('gondola');
+      const idxGaveta = getIdx('gaveta');
+      const idxPeso = getIdx('pesoliquido') !== -1 ? getIdx('pesoliquido') : getIdx('peso');
+      const idxCliente = getIdx('cliente');
+      const idxCidade = getIdx('cidade');
+      const idxNomeCliente = getIdx('nomecliente') !== -1 ? getIdx('nomecliente') : getIdx('nome');
+      const idxOrdem = getIdx('ordemproducao') !== -1 ? getIdx('ordemproducao') : getIdx('ossige');
+      const idxOrdemVenda = getIdx('ordemvenda');
+      const idxAgrupador = getIdx('agrupador');
+
+      let codigosExtraidos = [];
+      let ultimoRomaneio = null;
+
+      for (let i = idxCabecalho + 1; i < linhas.length; i++) {
+        const colunas = parseCSVLine(linhas[i]);
+        
+        const loteRaw = idxLote !== -1 ? colunas[idxLote] : null;
+        const posicaoRaw = idxPosicao !== -1 ? colunas[idxPosicao] : null;
+        const romaneioRaw = idxRomaneio !== -1 ? colunas[idxRomaneio] : null;
+
+        const loteLimpo = loteRaw ? loteRaw.trim() : null;
+        const posicaoLimpa = posicaoRaw ? posicaoRaw.trim() : null;
+        const romaneioLimpo = removerZeros(romaneioRaw);
+        const materialLimpo = removerZeros(idxMaterial !== -1 ? colunas[idxMaterial] : null);
+        const clienteLimpo = removerZeros(idxCliente !== -1 ? colunas[idxCliente] : null);
+        const ordemProducaoLimpa = removerZeros(idxOrdem !== -1 ? colunas[idxOrdem] : null);
+        const ordemVendaLimpa = removerZeros(idxOrdemVenda !== -1 ? colunas[idxOrdemVenda] : null);
+        const agrupadorLimpo = removerZeros(idxAgrupador !== -1 ? colunas[idxAgrupador] : null);
+
+        if (romaneioLimpo && romaneioLimpo.trim() !== '') {
+          ultimoRomaneio = romaneioLimpo.trim();
+        }
+
+        let identificadorPrincipal = null;
+        if (modoEscolhido === 'ROMANEIO') {
+          identificadorPrincipal = romaneioLimpo || ultimoRomaneio;
+        } else {
+          let identificadorLote = loteLimpo;
+          if (!identificadorLote && posicaoLimpa && /(MA|VA|TA|UA|RA|ZA|FA|UV)\d+/i.test(posicaoLimpa)) {
+              identificadorLote = posicaoLimpa.match(/(MA|VA|TA|UA|RA|ZA|FA|UV)\d+/i)[0].toUpperCase();
+          } else if (!identificadorLote && (!romaneioRaw || romaneioRaw.trim() === '') && posicaoLimpa && posicaoLimpa !== '') {
+              identificadorLote = posicaoLimpa;
+          }
+          identificadorPrincipal = identificadorLote ? identificadorLote.trim() : null;
+        }
+
+        if (identificadorPrincipal) {
+          let filialLida = idxCentro !== -1 ? colunas[idxCentro] : null;
+          if (!filialLida || filialLida.trim() === '') filialLida = determinarFilial(identificadorPrincipal);
+
+          codigosExtraidos.push({
+            codigo: limparCodigo(identificadorPrincipal),
+            lote: (modoEscolhido === 'LOTE') ? (loteLimpo ? limparCodigo(loteLimpo) : limparCodigo(identificadorPrincipal)) : null,
+            romaneio: (modoEscolhido === 'ROMANEIO') ? (romaneioLimpo ? limparCodigo(romaneioLimpo) : limparCodigo(identificadorPrincipal)) : null,
+            material: materialLimpo,
+            cliente: clienteLimpo,
+            nome_cliente: (idxNomeCliente !== -1 ? colunas[idxNomeCliente] : (idxCidade !== -1 ? colunas[idxCidade] : null)),
+            peso_liquido: idxPeso !== -1 ? colunas[idxPeso] : null,
+            descricao: idxDescricao !== -1 ? colunas[idxDescricao] : null,
+            ordem_producao: ordemProducaoLimpa,
+            ordem_venda: ordemVendaLimpa,
+            agrupador: agrupadorLimpo,
+            largura: idxLargura !== -1 ? colunas[idxLargura] : null,
+            espessura: idxEspessura !== -1 ? colunas[idxEspessura] : null,
+            deposito: idxDeposito !== -1 ? colunas[idxDeposito] : null,
+            gondola: idxGondola !== -1 ? colunas[idxGondola] : null,
+            posicao: idxGaveta !== -1 ? colunas[idxGaveta] : posicaoLimpa,
+            filial: filialLida
+          });
+        }
+      }
+
+      const idSessaoAtiva = await garantirSessao();
+      
+      const dadosParaBanco = codigosExtraidos.map(item => ({
+        sessao_id: idSessaoAtiva, 
+        lote: item.lote || item.codigo, 
+        romaneio: item.romaneio, 
+        material: limparValorParaBanco(item.material), 
+        cliente: limparValorParaBanco(item.cliente), 
+        nome_cliente: limparValorParaBanco(item.nome_cliente), 
+        peso_liquido: limparNumeroParaBanco(item.peso_liquido), 
+        descricao: limparValorParaBanco(item.descricao), 
+        posicao: limparValorParaBanco(item.posicao),
+        ordem_producao: limparValorParaBanco(item.ordem_producao),
+        ordem_venda: limparValorParaBanco(item.ordem_venda),
+        agrupador: limparValorParaBanco(item.agrupador),
+        largura: limparNumeroParaBanco(item.largura),
+        espessura: limparNumeroParaBanco(item.espessura),
+        deposito: limparValorParaBanco(item.deposito),
+        gondola: limparValorParaBanco(item.gondola),
+        filial: limparValorParaBanco(item.filial),
+        rota: rotaAtual || null 
+      }));
+
+      const { error: erroSap } = await supabase.from('bobinas_sap').insert(dadosParaBanco);
+      if (erroSap) console.warn("Aviso ao salvar base SAP:", erroSap);
+
+      setCsvBobinas(codigosExtraidos);
+      abrirAlerta('Sucesso', `Planilha importada! (${codigosExtraidos.length} itens processados como ${modoEscolhido === 'ROMANEIO' ? 'Romaneio' : 'Lote'})`);
+
+    } catch (erro) {
+      console.error(erro); abrirAlerta('Erro no Arquivo', erro.message || "Falha ao processar o CSV.");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setCarregandoAcao(false);
+    }
+  };
+
   const importarCSV = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -283,7 +436,18 @@ function App() {
         }
 
         const linhaCabecalho = linhas[idxCabecalho];
-        const separator = (linhaCabecalho.match(/;/g) || []).length > (linhaCabecalho.match(/,/g) || []).length ? ';' : ',';
+        let separator = ';';
+        const numSemicolons = (linhaCabecalho.match(/;/g) || []).length;
+        const numCommas = (linhaCabecalho.match(/,/g) || []).length;
+        const numTabs = (linhaCabecalho.match(/\t/g) || []).length;
+
+        if (numTabs > numSemicolons && numTabs > numCommas) {
+          separator = '\t';
+        } else if (numSemicolons >= numCommas) {
+          separator = ';';
+        } else {
+          separator = ',';
+        }
 
         const parseCSVLine = (line) => {
           let result = []; let current = ''; let inQuotes = false;
@@ -302,22 +466,6 @@ function App() {
         const idxPosicao = getIdx('posicao'); 
         const idxLote = getIdx('lote'); 
         const idxRomaneio = getIdx('romaneio'); 
-        const idxMaterial = getIdx('material');
-        const idxDescricao = getIdx('descmaterial') !== -1 ? getIdx('descmaterial') : getIdx('descricao'); 
-        const idxQuantidade = getIdx('quantidade');
-        const idxPeso = getIdx('pesoliquido') !== -1 ? getIdx('pesoliquido') : getIdx('peso');
-        const idxCliente = getIdx('cliente');
-        const idxCidade = getIdx('cidade');
-        const idxNomeCliente = getIdx('nomecliente') !== -1 ? getIdx('nomecliente') : getIdx('nome');
-        const idxOrdem = getIdx('ordemproducao') !== -1 ? getIdx('ordemproducao') : getIdx('ossige');
-        const idxOrdemVenda = getIdx('ordemvenda');
-        const idxAgrupador = getIdx('agrupador');
-        const idxLargura = getIdx('largura');
-        const idxEspessura = getIdx('espessura');
-        const idxDeposito = getIdx('deposito');
-        const idxCentro = getIdx('centro');
-        const idxGondola = getIdx('gondola');
-        const idxGaveta = getIdx('gaveta');
 
         if (idxPosicao === -1 && idxRomaneio === -1 && idxLote === -1) { 
           abrirAlerta('Erro', 'A planilha não possui as colunas esperadas ("Lote", "Posição" ou "Romaneio").'); 
@@ -325,165 +473,140 @@ function App() {
           return; 
         }
 
-        let codigosExtraidos = [];
+        const temLoteOuPosicao = idxLote !== -1 || idxPosicao !== -1;
+        const temRomaneio = idxRomaneio !== -1;
 
-        for (let i = idxCabecalho + 1; i < linhas.length; i++) {
-          const colunas = parseCSVLine(linhas[i]);
-          
-          const loteRaw = idxLote !== -1 ? colunas[idxLote] : null;
-          const posicaoRaw = idxPosicao !== -1 ? colunas[idxPosicao] : null;
-          const romaneioRaw = idxRomaneio !== -1 ? colunas[idxRomaneio] : null;
-
-          const loteLimpo = loteRaw ? loteRaw.trim() : null;
-          const posicaoLimpa = posicaoRaw ? posicaoRaw.trim() : null;
-          const romaneioLimpo = removerZeros(romaneioRaw);
-          const materialLimpo = removerZeros(idxMaterial !== -1 ? colunas[idxMaterial] : null);
-          const clienteLimpo = removerZeros(idxCliente !== -1 ? colunas[idxCliente] : null);
-          const ordemProducaoLimpa = removerZeros(idxOrdem !== -1 ? colunas[idxOrdem] : null);
-          const ordemVendaLimpa = removerZeros(idxOrdemVenda !== -1 ? colunas[idxOrdemVenda] : null);
-          const agrupadorLimpo = removerZeros(idxAgrupador !== -1 ? colunas[idxAgrupador] : null);
-
-          let identificadorLote = loteLimpo;
-          if (!identificadorLote && posicaoLimpa && /(RA|MA|VA)\d+/i.test(posicaoLimpa)) {
-              identificadorLote = posicaoLimpa.match(/(RA|MA|VA)\d+/i)[0].toUpperCase();
-          } else if (!identificadorLote && posicaoLimpa && posicaoLimpa !== '') {
-              identificadorLote = posicaoLimpa;
-          }
-
-          const identificadorPrincipal = romaneioRaw ? romaneioRaw.trim() : (loteRaw ? loteRaw.trim() : null);
-
-          if (identificadorPrincipal) {
-            let filialLida = idxCentro !== -1 ? colunas[idxCentro] : null;
-            if (!filialLida || filialLida.trim() === '') filialLida = determinarFilial(identificadorPrincipal);
-
-            codigosExtraidos.push({
-              codigo: limparCodigo(identificadorPrincipal),
-              lote: loteLimpo ? limparCodigo(loteLimpo) : null,
-              romaneio: romaneioLimpo ? limparCodigo(romaneioLimpo) : null,
-              material: materialLimpo,
-              cliente: clienteLimpo,
-              nome_cliente: (idxNomeCliente !== -1 ? colunas[idxNomeCliente] : (idxCidade !== -1 ? colunas[idxCidade] : null)),
-              peso_liquido: idxPeso !== -1 ? colunas[idxPeso] : null,
-              descricao: idxDescricao !== -1 ? colunas[idxDescricao] : null,
-              ordem_producao: ordemProducaoLimpa,
-              ordem_venda: ordemVendaLimpa,
-              agrupador: agrupadorLimpo,
-              largura: idxLargura !== -1 ? colunas[idxLargura] : null,
-              espessura: idxEspessura !== -1 ? colunas[idxEspessura] : null,
-              deposito: idxDeposito !== -1 ? colunas[idxDeposito] : null,
-              gondola: idxGondola !== -1 ? colunas[idxGondola] : null,
-              posicao: idxGaveta !== -1 ? colunas[idxGaveta] : posicaoLimpa,
-              filial: filialLida
-            });
-          }
+        if (temLoteOuPosicao && temRomaneio) {
+          setCarregandoAcao(false);
+          abrirConfirmacao(
+            'Importar Planilha',
+            'Esta planilha possui colunas de Lote/Posição e Romaneio. Como deseja realizar a importação?',
+            () => finalizarImportacao(linhas, idxCabecalho, separator, headersLimpos, 'LOTE'),
+            'Apenas Lotes / Agrupadores',
+            'Apenas Romaneios',
+            () => finalizarImportacao(linhas, idxCabecalho, separator, headersLimpos, 'ROMANEIO'),
+            () => { if (fileInputRef.current) fileInputRef.current.value = ''; }
+          );
+        } else if (temRomaneio) {
+          await finalizarImportacao(linhas, idxCabecalho, separator, headersLimpos, 'ROMANEIO');
+        } else {
+          await finalizarImportacao(linhas, idxCabecalho, separator, headersLimpos, 'LOTE');
         }
-
-        const idSessaoAtiva = await garantirSessao();
-        
-        const dadosParaBanco = codigosExtraidos.map(item => ({
-          sessao_id: idSessaoAtiva, 
-          lote: item.lote, 
-          romaneio: item.romaneio, 
-          material: limparValorParaBanco(item.material), 
-          cliente: limparValorParaBanco(item.cliente), 
-          nome_cliente: limparValorParaBanco(item.nome_cliente), 
-          peso_liquido: limparNumeroParaBanco(item.peso_liquido), 
-          descricao: limparValorParaBanco(item.descricao), 
-          posicao: limparValorParaBanco(item.posicao),
-          ordem_producao: limparValorParaBanco(item.ordem_producao),
-          ordem_venda: limparValorParaBanco(item.ordem_venda),
-          agrupador: limparValorParaBanco(item.agrupador),
-          largura: limparNumeroParaBanco(item.largura),
-          espessura: limparNumeroParaBanco(item.espessura),
-          deposito: limparValorParaBanco(item.deposito),
-          gondola: limparValorParaBanco(item.gondola),
-          filial: limparValorParaBanco(item.filial),
-          rota: rotaAtual || null 
-        }));
-
-        const { error: erroSap } = await supabase.from('bobinas_sap').insert(dadosParaBanco);
-        if (erroSap) console.warn("Aviso ao salvar base SAP:", erroSap);
-
-        setCsvBobinas(codigosExtraidos);
-        abrirAlerta('Sucesso', `Planilha importada! (${codigosExtraidos.length} itens processados)`);
 
       } catch (erro) {
         console.error(erro); abrirAlerta('Erro no Arquivo', erro.message || "Falha ao processar o CSV.");
-      } finally {
-        if (fileInputRef.current) fileInputRef.current.value = '';
         setCarregandoAcao(false);
       }
     };
     reader.readAsText(file, 'ISO-8859-1');
-  }
+  };
 
   const processarEntradaMassa = (textoEntrada) => {
     let itensExtraidos = [];
-    const linhas = textoEntrada.split(/[\r\n,]+/);
+    if (!textoEntrada) return itensExtraidos;
+
+    const linhas = textoEntrada.split(/[\r\n]+/);
 
     for (let linha of linhas) {
       linha = linha.trim().toUpperCase();
       if (!linha) continue;
 
-      let processouTags = false;
+      // Se a contagem ativa for LOTE:
+      if (tipoContagem === 'LOTE') {
+        // 1. Se a linha contiver a tag de lotes VL\d+LT (canto inferior direito)
+        const matchVL = linha.match(/VL\d+LT/i);
+        if (matchVL) {
+          const indexFimTag = matchVL.index + matchVL[0].length;
+          const restante = linha.substring(indexFimTag);
+          
+          // Quebra os lotes pelo espaço ou outros delimitadores comuns
+          const partesInternas = restante.split(/[\s;]+/);
+          partesInternas.forEach(p => {
+            let palavraLote = p.trim();
+            if (!palavraLote) return;
 
-      if (linha.includes('VL2LT')) {
-        const regexVL2LT = /VL2LT(.*?)KG/g;
-        let matchVL;
-        while ((matchVL = regexVL2LT.exec(linha)) !== null) {
-          itensExtraidos.push({ tipo: 'lote', valor: matchVL[1].trim() });
-          processouTags = true;
+            // Se a palavra contiver a palavra 'KG' (ex: VA13131815KG126,84), pega apenas o que vem antes de 'KG'
+            if (/KG/i.test(palavraLote)) {
+              const partesKG = palavraLote.split(/KG/i);
+              palavraLote = partesKG[0].trim();
+            }
+
+            const limpo = removerZeros(palavraLote);
+            // Lote físico sempre começa com letra e tem comprimento de lote típico (6 a 12 caracteres)
+            if (limpo && /^[A-Z]/i.test(limpo.charAt(0)) && limpo.length >= 6 && limpo.length <= 12) {
+              itensExtraidos.push({ tipo: 'lote', valor: limpo });
+            }
+          });
+          continue;
         }
-      } 
-      
-      if (linha.includes('(7)') && linha.includes('(8)')) {
-        const regexRomaneio = /\(7\)(.*?)\(8\)/g;
-        let matchRom;
-        while ((matchRom = regexRomaneio.exec(linha)) !== null) {
-          itensExtraidos.push({ tipo: 'romaneio', valor: removerZeros(matchRom[1]) });
-          processouTags = true;
+
+        // 2. Se a linha NÃO contiver a tag VL\d+LT
+        const palavras = linha.split(/[\s,;\-\/]+/).filter(Boolean);
+        
+        // Se tiver múltiplos termos sem a tag VL\d+LT (ex: cabeçalho MA1003OP500895600), ignoramos inteiramente
+        if (palavras.length > 1) {
+          continue;
+        }
+
+        if (palavras.length === 1) {
+          const termoUnico = palavras[0];
+          // Descarta se contiver OP (Ordem de Produção) ou se for muito longo para ser lote (ex: cabeçalhos colados)
+          if (termoUnico.includes('OP') || termoUnico.length > 12) {
+            continue;
+          }
+
+          const valorLimpo = removerZeros(termoUnico);
+          if (!valorLimpo) continue;
+
+          const isPrefixoAG = termoUnico.startsWith('AG');
+          const agNumeroLimpo = isPrefixoAG ? removerZeros(termoUnico.substring(2)) : valorLimpo;
+
+          // Se for um identificador de agrupador e o SAP estiver carregado, expande seus lotes
+          const itemSAPAgr = csvBobinas.find(c => removerZeros(c.agrupador) === agNumeroLimpo);
+
+          if (itemSAPAgr) {
+            const bobinasDoAgrupador = csvBobinas.filter(c => removerZeros(c.agrupador) === agNumeroLimpo);
+            bobinasDoAgrupador.forEach(b => {
+              if (b.lote) {
+                itensExtraidos.push({ tipo: 'lote', valor: b.lote });
+              }
+            });
+          } else {
+            // Se não estiver no SAP ou for Sobra, aceita apenas se começar com LETRA e não for o termo com prefixo AG puro
+            const comecaComLetra = /^[A-Z]/i.test(valorLimpo.charAt(0));
+            if (comecaComLetra && !isPrefixoAG) {
+              itensExtraidos.push({ tipo: 'lote', valor: valorLimpo });
+            }
+          }
         }
       }
 
-      if (processouTags) continue;
-
-      const palavras = linha.split(/\s+/);
-      for (const palavra of palavras) {
-        if (!palavra) continue;
-
-        const valorLimpo = removerZeros(palavra);
-
-        const itemEncontrado = csvBobinas.find(c => 
-            removerZeros(c.lote) === valorLimpo || 
-            removerZeros(c.romaneio_original) === valorLimpo || 
-            removerZeros(c.agrupador) === valorLimpo
-        );
-
-        if (itemEncontrado) {
-            if (removerZeros(itemEncontrado.romaneio_original) === valorLimpo) {
-                itensExtraidos.push({ tipo: 'romaneio', valor: itemEncontrado.romaneio_original });
-            } else if (removerZeros(itemEncontrado.agrupador) === valorLimpo) {
-                const bobinasDoAgrupador = csvBobinas.filter(c => removerZeros(c.agrupador) === valorLimpo);
-                bobinasDoAgrupador.forEach(b => itensExtraidos.push({ tipo: 'lote', valor: b.lote }));
-            } else {
-                itensExtraidos.push({ tipo: 'lote', valor: itemEncontrado.lote });
-            }
-        } else {
-            // Classifica de acordo com padrões conhecidos se não estiver no SAP
-            let tipoClassificado = 'lote'; // Fallback padrão
-            if (/^(RA|VA|MA|UV)\d{8}$/i.test(valorLimpo)) {
-                tipoClassificado = 'lote';
-            } else if (/^500\d{7}$/.test(valorLimpo)) {
-                tipoClassificado = 'romaneio';
-            } else {
-                // Se não identificado por formato estrito, alinha com a seleção ativa da sessão
-                tipoClassificado = tipoContagem === 'ROMANEIO' ? 'romaneio' : 'lote';
-            }
-            itensExtraidos.push({ tipo: tipoClassificado, valor: valorLimpo });
+      // Se a contagem ativa for ROMANEIO:
+      if (tipoContagem === 'ROMANEIO') {
+        // Se contiver a tag de lotes VL\d+LT (o agrupador do canto inferior), ignoramos por completo no Romaneio
+        if (/VL\d+LT/i.test(linha)) {
+          continue;
         }
+
+        // 1. Se contiver a tag (7) e (8) ou apenas a tag (7) com dígitos subsequentes
+        if (linha.includes('(7)')) {
+          const regexRom = /\(7\)(\d+)/i;
+          const matchRom = regexRom.exec(linha);
+          if (matchRom) {
+            const valorRom = matchRom[1].trim();
+            const limpo = removerZeros(valorRom);
+            if (limpo && /^\d+$/.test(limpo)) {
+              itensExtraidos.push({ tipo: 'romaneio', valor: limpo });
+            }
+          }
+          continue;
+        }
+
+
       }
     }
     
+    // Garantir unicidade
     const unicos = [];
     const chaves = new Set();
     itensExtraidos.forEach(item => {
@@ -504,7 +627,7 @@ function App() {
     const itensExtraidos = processarEntradaMassa(textoLido);
 
     if (itensExtraidos.length === 0) {
-      abrirAlerta('Atenção', 'Nenhum código de Lote ou Romaneio válido foi reconhecido nesta leitura.');
+      abrirAlerta('Atenção', `Nenhum código de ${tipoContagem === 'LOTE' ? 'Lote físico' : 'Romaneio'} válido foi reconhecido nesta leitura.`);
       setCodigo(''); return;
     }
 
@@ -576,7 +699,7 @@ function App() {
         insercoesNoBanco.push({
           sessao_id: idSessaoAtiva, 
           lote: identificadorFinal, 
-          romaneio: bobinaSAP ? bobinaSAP.romaneio : null, 
+          romaneio: bobinaSAP ? bobinaSAP.romaneio : (tipoContagem === 'ROMANEIO' ? codigoLimpo : null), 
           cracha_leitura: crachaLogado,
           filial: filialMapeada, 
           deposito: depositoAInserir, 
@@ -591,8 +714,16 @@ function App() {
         }
 
         listaAtualizada = [{
-          codigo: identificadorFinal, lote: identificadorFinal, romaneio: bobinaSAP ? bobinaSAP.romaneio : null, dataHora: `${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}`, cracha: crachaLogado,
-          nome: nomeLogado, filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rota: rotaAtual
+          codigo: identificadorFinal, 
+          lote: identificadorFinal, 
+          romaneio: bobinaSAP ? bobinaSAP.romaneio : (tipoContagem === 'ROMANEIO' ? codigoLimpo : null), 
+          dataHora: `${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}`, 
+          cracha: crachaLogado,
+          nome: nomeLogado, 
+          filial: filialMapeada, 
+          deposito: depositoAInserir, 
+          endereco_lido: enderecoAInserir, 
+          rota: rotaAtual
         }, ...listaAtualizada];
       }
 
@@ -635,7 +766,11 @@ function App() {
     });
 
     lotesFormatados = [...new Set(lotesFormatados)];
-    if (lotesFormatados.length === 0) { setCarregandoAcao(false); abrirAlerta('Atenção', 'Códigos inválidos capturados pelo drone.'); return; }
+    if (lotesFormatados.length === 0) { 
+      setCarregandoAcao(false); 
+      abrirAlerta('Atenção', `Nenhum código de ${tipoContagem === 'LOTE' ? 'Lote físico' : 'Romaneio'} válido foi capturado pelo drone.`); 
+      return; 
+    }
 
     try {
       const idSessaoAtiva = await garantirSessao();
@@ -666,7 +801,7 @@ function App() {
         listaAtualizada = [{
           codigo: identificadorFinal, 
           lote: identificadorFinal,
-          romaneio: bobinaSAP ? bobinaSAP.romaneio : null,
+          romaneio: bobinaSAP ? bobinaSAP.romaneio : (tipoContagem === 'ROMANEIO' ? lote : null),
           dataHora: `${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR')}`, cracha: crachaLogado, nome: nomeLogado,
           filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rota: rotaAtual
         }, ...listaAtualizada];
@@ -674,7 +809,7 @@ function App() {
         insercoesNoBanco.push({
           sessao_id: idSessaoAtiva, 
           lote: identificadorFinal, 
-          romaneio: bobinaSAP ? bobinaSAP.romaneio : null,
+          romaneio: bobinaSAP ? bobinaSAP.romaneio : (tipoContagem === 'ROMANEIO' ? lote : null),
           cracha_leitura: crachaLogado,
           filial: filialMapeada, deposito: depositoAInserir, endereco_lido: enderecoAInserir, rotas: rotaAtual || null
         });
@@ -986,7 +1121,7 @@ function App() {
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
           <div className="modal-dialog modal-dialog-centered mx-3 mx-sm-auto">
             <div className="modal-content shadow border-0" style={{ borderRadius: '8px', overflow: 'hidden' }}>
-              <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`}><h5 className="modal-title fw-bold fs-6">{modal.type === 'confirm' && <i className="bi bi-exclamation-triangle-fill me-2"></i>}{modal.title}</h5><button type="button" className="btn-close btn-close-white" onClick={modal.onCancel || fecharModal}></button></div>
+              <div className={`modal-header border-0 ${modal.type === 'confirm' ? 'bg-danger text-white' : 'bg-dark text-white'}`}><h5 className="modal-title fw-bold fs-6">{modal.type === 'confirm' && <i className="bi bi-exclamation-triangle-fill me-2"></i>}{modal.title}</h5><button type="button" className="btn-close btn-close-white" onClick={modal.onClose || modal.onCancel || fecharModal}></button></div>
               <div className="modal-body p-4 fs-6 text-secondary text-center"><p className="mb-0">{modal.message}</p></div>
               <div className="modal-footer border-0 justify-content-center pb-4 flex-column flex-sm-row gap-2"><button type="button" className="vp-btn vp-btn-outline w-100 w-sm-auto m-0" onClick={modal.onCancel || fecharModal}>{modal.cancelText || 'Fechar'}</button>{modal.type === 'confirm' && (<button type="button" className="vp-btn vp-btn-danger w-100 w-sm-auto m-0" onClick={modal.onConfirm}>{modal.confirmText || 'Sim'}</button>)}</div>
             </div>
@@ -1003,7 +1138,7 @@ function App() {
                 <p className="mb-2 text-center">Operador: <strong className="text-danger">{crachaLogado}</strong><br /><span className="small text-muted">{leiturasProcessadas.length} resultados.</span></p>
                 <FilterControls filters={conferenciaFilters} onFilterChange={setConferenciaFilters} onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '' })} sortConfig={conferenciaSort} onSortChange={setConferenciaSort} itemsCount={leiturasProcessadas.length} />
                 <div className="row g-2 mb-3 mt-1">
-                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Filial</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.filial} onChange={e => setConferenciaFilters(prev => ({ ...prev, filial: e.target.value }))}><option value="">Todas as Filiais</option><option value="1001">1001 (VA)</option><option value="1003">1003 (MA)</option><option value="1005">1005 (RA)</option></select></div>
+                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Filial</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.filial} onChange={e => setConferenciaFilters(prev => ({ ...prev, filial: e.target.value }))}><option value="">Todas as Filiais</option><option value="1001">1001 (VA - VIDEIRA)</option><option value="1003">1003 (MA - MANAUS)</option><option value="1005">1005 (RA - RIO VERDE)</option><option value="1006">1006 (UA - UNIÃO DA VITÓRIA)</option><option value="1007">1007 (TA - 3 RIOS)</option><option value="1009">1009 (ZA - VARZEA GRANDE)</option><option value="1010">1010 (FA - BARRACÃO DO LIMA)</option></select></div>
                   <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Depósito</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.deposito} onChange={e => setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }))}><option value="">Todos os Depósitos</option>{depositosDisponiveis.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}</select></div>
                 </div>
 

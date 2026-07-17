@@ -6,67 +6,71 @@ const Scanner = ({ aoLerCodigo, aoCancelar }) => {
   const [escaneando, setEscaneando] = useState(true);
   const [erroPermissao, setErroPermissao] = useState('');
 
+  const lidarComCancelar = () => {
+    setEscaneando(false);
+    if (scannerRef.current) {
+      try {
+        if (scannerRef.current.isScanning) {
+          scannerRef.current.stop()
+            .then(() => {
+              scannerRef.current.clear();
+              aoCancelar();
+            })
+            .catch(err => {
+              console.warn("Aviso ao desligar câmera:", err);
+              aoCancelar();
+            });
+        } else {
+          scannerRef.current.clear();
+          aoCancelar();
+        }
+      } catch (e) {
+        console.warn("Erro no cancelamento da câmera:", e);
+        aoCancelar();
+      }
+    } else {
+      aoCancelar();
+    }
+  };
+
   useEffect(() => {
     scannerRef.current = new Html5Qrcode("leitor-camera");
     let montado = true;
 
-    Html5Qrcode.getCameras().then(devices => {
+    setTimeout(async () => {
       if (!montado) return;
-
-      if (devices && devices.length) {
-        const cameraTraseira = devices.find(d =>
-          d.label.toLowerCase().includes('back') ||
-          d.label.toLowerCase().includes('traseira') ||
-          d.label.toLowerCase().includes('environment')
-        );
-
-        const camId = cameraTraseira ? cameraTraseira.id : devices[devices.length - 1].id;
-
-        setTimeout(async () => {
-          if (!montado) return;
-          try {
-            await scannerRef.current.start(
-              camId,
-              {
-                fps: 15,
-                qrbox: (videoWidth, videoHeight) => {
-                  const minDimension = Math.min(videoWidth, videoHeight);
-                  return {
-                    width: Math.floor(minDimension * 0.7),
-                    height: Math.floor(minDimension * 0.7)
-                  };
-                }
-              },
-              (textoDecodificado) => {
-                if (scannerRef.current && scannerRef.current.getState() === 2) {
-                  scannerRef.current.pause();
-                  scannerRef.current.stop().then(() => {
-                    if (montado) setEscaneando(false);
-                    aoLerCodigo(textoDecodificado);
-                  }).catch(console.error);
-                }
-              },
-              (erro) => { }
-            );
-          } catch (err) {
-            console.error("Erro ao ligar a câmera:", err);
-            if (montado) {
-              setErroPermissao("Falha ao iniciar a câmera do dispositivo.");
-              setEscaneando(false);
+      try {
+        await scannerRef.current.start(
+          { facingMode: "environment" },
+          {
+            fps: 15,
+            qrbox: (videoWidth, videoHeight) => {
+              const minDimension = Math.min(videoWidth, videoHeight);
+              return {
+                width: Math.floor(minDimension * 0.7),
+                height: Math.floor(minDimension * 0.7)
+              };
             }
-          }
-        }, 100);
-
-      } else {
-        if (montado) setErroPermissao("Nenhuma câmera encontrada neste dispositivo.");
+          },
+          (textoDecodificado) => {
+            if (scannerRef.current && scannerRef.current.getState() === 2) {
+              scannerRef.current.pause();
+              scannerRef.current.stop().then(() => {
+                if (montado) setEscaneando(false);
+                aoLerCodigo(textoDecodificado);
+              }).catch(console.error);
+            }
+          },
+          (erro) => { }
+        );
+      } catch (err) {
+        console.error("Erro ao ligar a câmera:", err);
+        if (montado) {
+          setErroPermissao("Permita o acesso à câmera no seu navegador para continuar.");
+          setEscaneando(false);
+        }
       }
-    }).catch(err => {
-      console.error("Erro ao buscar câmeras", err);
-      if (montado) {
-        setErroPermissao("Permita o acesso à câmera no seu navegador para continuar.");
-        setEscaneando(false);
-      }
-    });
+    }, 150);
 
     return () => {
       montado = false;
@@ -123,7 +127,7 @@ const Scanner = ({ aoLerCodigo, aoCancelar }) => {
           <button
             className="vp-btn vp-btn-outline w-100 d-flex justify-content-center align-items-center"
             style={{ borderColor: 'var(--vp-red)', color: 'var(--vp-red)' }}
-            onClick={aoCancelar}
+            onClick={lidarComCancelar}
           >
             Cancelar Leitura
           </button>
