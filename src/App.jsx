@@ -224,12 +224,12 @@ function App() {
     if (bobina.posicao && !bobina.deposito) {
         return `Posição: ${bobina.posicao}`;
     }
+    if (bobina.gondola || bobina.posicao) {
+      return `Depósito: ${bobina.deposito || '-'} | G: ${bobina.gondola || '-'} | P: ${bobina.posicao || '-'}`;
+    }
     const depInfo = depositosDisponiveis.find(d => d.id === bobina.deposito);
     if (depInfo && !depInfo.requerEndereco) {
       return `Depósito: ${bobina.deposito}`;
-    }
-    if (bobina.gondola || bobina.posicao) {
-      return `Depósito: ${bobina.deposito || '-'} | G: ${bobina.gondola || '-'} | P: ${bobina.posicao || '-'}`;
     }
     return `Depósito: ${bobina.deposito || '-'}`;
   };
