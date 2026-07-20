@@ -5,6 +5,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     const [processando, setProcessando] = useState(false);
     const [status, setStatus] = useState('');
     const [resultado, setResultado] = useState(null);
+    const [tempoTotalEspera, setTempoTotalEspera] = useState(0);
 
     const lidarComUploadVideo = (e) => {
         const file = e.target.files[0];
@@ -18,6 +19,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         if (!arquivo) return;
         setProcessando(true);
         setStatus('Preparando envio do arquivo...');
+        const tInicio = Date.now();
 
         const formData = new FormData();
         formData.append("file", arquivo);
@@ -81,6 +83,8 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
         try {
             const dados = await uploadComProgresso();
+            const tTotal = (Date.now() - tInicio) / 1000;
+            setTempoTotalEspera(tTotal);
             setResultado(dados);
             setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
         } catch (erro) {
@@ -108,6 +112,11 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
             ? ((resultado.duracao_video || 0) / resultado.tempo_processamento).toFixed(1) 
             : '0.0';
 
+        // Novos cálculos de tempo de upload e tempo de espera total
+        const tempoUpload = Math.max(0, tempoTotalEspera - (resultado.tempo_processamento || 0));
+        const tempoUploadFormatado = `${tempoUpload.toFixed(1)}s`;
+        const tempoEsperaTotalFormatada = formatarTempo(tempoTotalEspera || 0);
+
         return (
             <div className="vp-card" style={{ textAlign: 'center', borderColor: 'var(--vp-orange)' }}>
                 <span className="vp-micro-label" style={{ color: 'var(--vp-orange)' }}>Módulo Drone (IA Server)</span>
@@ -124,8 +133,14 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                         </div>
                     </div>
                     <div className="col-6">
+                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid #0056b3 !important' }}>
+                            <span className="small text-secondary fw-bold d-block mb-1">Bobinas Detectadas</span>
+                            <span className="fs-5 fw-bold text-primary">{resultado.total_encontrados} un.</span>
+                        </div>
+                    </div>
+                    <div className="col-6">
                         <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid var(--vp-orange) !important' }}>
-                            <span className="small text-secondary fw-bold d-block mb-1">Tempo de Análise</span>
+                            <span className="small text-secondary fw-bold d-block mb-1">Processamento IA</span>
                             <span className="fs-5 fw-bold text-dark">{tempoProcessamentoFormatado}</span>
                         </div>
                     </div>
@@ -138,9 +153,15 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                         </div>
                     </div>
                     <div className="col-6">
-                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid #0056b3 !important' }}>
-                            <span className="small text-secondary fw-bold d-block mb-1">Bobinas Detectadas</span>
-                            <span className="fs-5 fw-bold text-primary">{resultado.total_encontrados} un.</span>
+                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid #8e44ad !important' }}>
+                            <span className="small text-secondary fw-bold d-block mb-1">Envio / Transmissão</span>
+                            <span className="fs-5 fw-bold text-purple" style={{ color: '#8e44ad' }}>{tempoUploadFormatado}</span>
+                        </div>
+                    </div>
+                    <div className="col-6">
+                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid #e74c3c !important' }}>
+                            <span className="small text-secondary fw-bold d-block mb-1">Tempo Total Real</span>
+                            <span className="fs-5 fw-bold text-danger" style={{ color: '#e74c3c' }}>{tempoEsperaTotalFormatada}</span>
                         </div>
                     </div>
                 </div>
