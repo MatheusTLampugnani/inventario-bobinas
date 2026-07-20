@@ -352,6 +352,22 @@ sequenceDiagram
 
 ---
 
+### ADR-06: Arquitetura Offline-First com Dexie.js (IndexedDB) (v2.3)
+
+**Decisão**: Substituir inserções síncronas diretas do Supabase por um fluxo local-first usando o Dexie.js para gerenciar tabelas IndexedDB locais.
+
+**Justificativa**: Em galpões de expedição da Videplast, a rede Wi-Fi/celular oscila frequentemente. Salvar diretamente no banco de dados remoto gerava travamentos e perda de dados. Com a nova arquitetura, o dado é persistido localmente e enfileirado na tabela de pendências, com sincronização em lote automatizada assim que a conectividade é restabelecida.
+
+---
+
+### ADR-07: Tolerância a Falhas na Validação de Sessão (v2.3)
+
+**Decisão**: Ajustar a função `garantirSessao()` para não consultar o servidor Supabase em caso de desconexão ativa, confiando no `sessaoId` presente na memória do navegador.
+
+**Justificativa**: No fluxo original, mesmo gravando localmente, o app tentava conferir se a sessão existia remotamente no banco antes de aceitar a leitura. Isso quebrava o fluxo offline ao lançar uma exceção de rede. Ao pular essa validação em modo offline, garantimos resiliência total para o operador.
+
+---
+
 ## 🔲 Padrões de Projeto Utilizados
 
 | Padrão | Onde é Aplicado | Descrição |
@@ -440,6 +456,8 @@ CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
 | Versão | Melhoria | Impacto |
 |--------|----------|---------|
+| v2.3 | **Offline-First com Dexie.js (IndexedDB)** | Permite que operadores continuem bipando bobinas sem conexão Wi-Fi. Os dados são salvos localmente e sincronizados em lote no background quando a conexão volta. |
+| v2.3 | **Bypass Offline de Validação de Sessão** | `garantirSessao` ignora consultas remotas ao Supabase e confia na sessão local caso a rede caia, eliminando erros no meio de bipagens. |
 | v2.2 | **Pipeline de Decodificação Progressivo (Early Exit)** | Abandona filtros de imagem pesados assim que um código é encontrado no frame; reduz tempo médio por frame de ~150ms para ~20ms em trechos nítidos |
 | v2.2 | **Taxa de Amostragem Reduzida (5 fps → 3 fps)** | Redução de ~40% no volume de frames processados sem perda de cobertura de detecção |
 | v2.2 | **Painel de Estatísticas Pós-Análise** | Frontend exibe Duração do Vídeo, Tempo de Análise da IA, Performance (Nx veloz) e Bobinas Detectadas antes de importar |

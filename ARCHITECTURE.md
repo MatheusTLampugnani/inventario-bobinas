@@ -1,12 +1,12 @@
 # 📐 Documento de Arquitetura de Software — Inventário de Bobinas Videplast
 
-## Visão Enterprise | v2.2
+## Visão Enterprise | v2.3
 
 **Classificação**: Interno — Uso Restrito  
 **Última Atualização**: Julho/2026  
 **Responsável**: Equipe de Engenharia — Videplast  
 **Status**: Em Produção  
-**Versão Atual**: v2.2 — Pipeline de Decodificação Progressivo (Early Exit) + Métricas de Performance  
+**Versão Atual**: v2.3 — Offline-First (Dexie.js / IndexedDB) + Sincronização em Background + Bypass de Rede de Sessão
 
 ---
 
@@ -522,9 +522,20 @@ C4Component
 
 ### ADR-06: Métricas de Performance Retornadas pela API (v2.2)
 
-- **Contexto**: O operador de drone não tinha visibilidade sobre a velocidade real de processamento da IA.
-- **Decisão**: O endpoint calcula e retorna `tempo_processamento` (latência real da IA via `time.time()`) e `duracao_video` (via `total_frames / fps`) no JSON de resposta.
-- **Justificativa**: O frontend usa essas métricas para exibir um painel de estatísticas com: Duração do Vídeo, Tempo de Análise, Performance (quantas vezes mais rápido que o tempo real) e total de Bobinas Detectadas. Fornece feedback valioso para o operador e para ajustes futuros de configuração.
+- **Justificativa**: O endpoint calcula e retorna `tempo_processamento` (latência real da IA via `time.time()`) e `duracao_video` (via `total_frames / fps`) no JSON de resposta.
+- **Justificativa**: O frontend usa essas métricas para exibir um painel de estatísticas com: Duração do Vídeo, Tempo de Análise, Performance (quantas vezes mais rápido que o tempo real) e total de Bobinas Detectadas. Fornece feedback valioso para o operador e para adjustments futuros de configuração.
+
+### ADR-07: Arquitetura Offline-First com Dexie.js (IndexedDB) (v2.3)
+
+- **Contexto**: A rede Wi-Fi e de dados móveis em grandes armazéns logísticos e galpões da Videplast apresenta sombras e oscilações frequentes.
+- **Decisão**: Adoção de um padrão local-first, onde toda bipagem de bobina ou processamento de lote (incluindo drone) é salva localmente em tabelas IndexedDB gerenciadas pelo Dexie.js antes de qualquer envio de rede ser tentado.
+- **Justificativa**: A bipagem síncrona diretamente no Supabase gerava falhas de transação, travamentos de tela e perda de bobinas lidas. Com o Dexie.js, o operador nunca interrompe o trabalho; as bipagens são salvas localmente a taxas de sub-milissegundos e sincronizadas em background assim que o navegador detecta a presença de internet (`window.online`).
+
+### ADR-08: Tolerância a Falhas na Validação de Sessão (v2.3)
+
+- **Contexto**: Para iniciar leituras, a aplicação depende de uma sessão registrada no Supabase. O fluxo original validava ou tentava recriar a sessão a cada leitura bipada fazendo fetch remoto.
+- **Decisão**: Alterar a função `garantirSessao` para ignorar chamadas de rede no Supabase em caso de desconexão ativa, utilizando e confiando diretamente no ID de sessão (`sessaoId`) persistido em memória/sessionStorage.
+- **Justificativa**: Impedir que erros de timeout ou falhas de conexão impeçam a bipagem de funcionar, garantindo que o buffer local continue aceitando novas entradas mesmo em ambientes de conectividade zero.
 
 ---
 
@@ -538,7 +549,10 @@ C4Component
 
 ## 8. Alta Disponibilidade e Recuperação de Desastres (DR)
 
-- **Armazenamento Seguro de Sessão**: Em caso de falha de conexão do dispositivo móvel do operador com a internet, o sistema grava o estado atual das leituras no `sessionStorage` do navegador. Se o navegador sofrer recarregamento acidental, a aplicação recupera o estado e as bobinas bipadas, prevenindo a perda do progresso do trabalho.
+- **Arquitetura Offline-First (IndexedDB)**: Em caso de falha completa ou oscilação de conexão do dispositivo móvel do operador com a internet, o sistema deixa de depender do Supabase de forma síncrona. Os dados de cada bobina bipada são imediatamente salvos na tabela local `leituras_pendentes` do IndexedDB (via Dexie.js) e inseridos no estado em memória para atualização da tela.
+- **Gerenciador de Sincronização (SyncManager)**: O hook customizado `useSyncManager` monitora alterações na rede (`window.online`/`offline`). Ao restabelecer a conexão, ele processa a fila de pendências enviando as bipagens acumuladas ao Supabase em lotes otimizados e atualiza o status de sincronização local.
+- **Bypass de Validação de Sessão**: Se o dispositivo estiver offline, a validação remota de `sessaoId` é pulada, prevenindo que exceções de fetch interrompam o loop de trabalho do operador. Se um novo inventário for iniciado totalmente offline, um ID temporário estruturado com timestamp (`offline-[timestamp]`) é gerado localmente e conciliado ao retornar à rede.
+- **Armazenamento Seguro de Sessão**: O progresso da interface do usuário (planilha SAP carregada, filtros ativos e estados de navegação) é mantido em `sessionStorage` para recuperação instantânea em caso de recarga acidental do navegador.
 - **Backups de Dados**: O banco Supabase conta com backups lógicos diários automáticos. Em cenários corporativos enterprise, deve-se habilitar replicação física de leitura (Read Replicas) em outras regiões geográficas para failover rápido.
 
 ---
