@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "^2.99.2",
     "@zxing/library": "^0.21.3",
     "bootstrap": "^5.3.8",
+    "dexie": "^4.4.4",
     "html5-qrcode": "^2.3.8",
     "jsqr": "^1.4.0",
     "react": "^19.2.0",

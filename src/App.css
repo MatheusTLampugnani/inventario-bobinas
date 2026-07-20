@@ -892,3 +892,70 @@ textarea.vp-input {
     font-size: 1rem;
   }
 }
+
+/* ===== BADGES DE CONECTIVIDADE (OFFLINE-FIRST) ===== */
+.vp-badge-offline,
+.vp-badge-online,
+.vp-badge-syncing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  border-radius: 20px;
+  padding: 4px 10px;
+  text-transform: uppercase;
+}
+
+.vp-badge-offline {
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.vp-badge-online {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.vp-badge-syncing {
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+/* Bolinhas animadas */
+.vp-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.vp-badge-dot-offline {
+  background: #f59e0b;
+  animation: vp-pulse-offline 1.5s ease-in-out infinite;
+}
+
+.vp-badge-dot-online {
+  background: #10b981;
+}
+
+.vp-badge-dot-syncing {
+  background: #3b82f6;
+  animation: vp-spin-dot 1s linear infinite;
+}
+
+@keyframes vp-pulse-offline {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.7); }
+}
+
+@keyframes vp-spin-dot {
+  0%   { transform: rotate(0deg) scale(1); }
+  50%  { transform: rotate(180deg) scale(1.3); }
+  100% { transform: rotate(360deg) scale(1); }
+}

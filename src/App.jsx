@@ -5,6 +5,8 @@ import logoVideplast from './assets/videplast-brand.png'
 import { supabase } from './supabase'
 import FilterControls from './components/FilterControls'
 import ProcessadorDrone from './components/ProcessadorDrone'
+import db from './db'
+import { useSyncManager } from './hooks/useSyncManager'
 import './App.css'
 
 const limparCodigo = (codigo) => {
@@ -50,6 +52,10 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('usuario_is_admin') === 'true');
   const [leiturasGlobais, setLeiturasGlobais] = useState([]);
   const [depositosDisponiveis, setDepositosDisponiveis] = useState([]);
+
+  // OFFLINE-FIRST: hook de sincronização automática com IndexedDB
+  const { isOnline, pendingCount, syncNow } = useSyncManager();
+
   
   // ESTADO ROTAS
   const [rotasDisponiveis, setRotasDisponiveis] = useState([]);
@@ -756,9 +762,14 @@ function App() {
       }
 
       if (insercoesNoBanco.length > 0) {
-          const { error } = await supabase.from('bobinas_lidas').insert(insercoesNoBanco);
-          if (error) throw error;
+          // OFFLINE-FIRST: salva localmente primeiro (nunca falha), depois tenta sincronizar
+          const agora = Date.now();
+          await db.leituras_pendentes.bulkAdd(
+            insercoesNoBanco.map(i => ({ ...i, _status: 'pendente', _criado_em: agora }))
+          );
           setBobinasLidas(listaAtualizada);
+          // Tenta sincronizar em background (não bloqueia nem exibe erro se offline)
+          syncNow();
       }
       
       setCodigo('');
@@ -855,7 +866,14 @@ function App() {
         });
       }
 
-      if (insercoesNoBanco.length > 0) await supabase.from('bobinas_lidas').insert(insercoesNoBanco);
+      if (insercoesNoBanco.length > 0) {
+        // OFFLINE-FIRST: salva localmente primeiro, sincroniza em background
+        const agora = Date.now();
+        await db.leituras_pendentes.bulkAdd(
+          insercoesNoBanco.map(i => ({ ...i, _status: 'pendente', _criado_em: agora }))
+        );
+        syncNow();
+      }
       setBobinasLidas(listaAtualizada);
       abrirAlerta('Missão do Drone Concluída!', `Processados e inseridos ${insercoesNoBanco.length} novos itens.`);
     } catch (erro) { abrirAlerta('Erro', 'Ocorreu um problema ao salvar os dados do drone.'); } finally { setCarregandoAcao(false); }
@@ -864,7 +882,14 @@ function App() {
   const removerBobina = async (codigoParaRemover) => {
     setCarregandoAcao(true);
     try {
-      if (sessaoId) await supabase.from('bobinas_lidas').delete().eq('sessao_id', sessaoId).eq('lote', codigoParaRemover);
+      // Remove do Supabase (online) e do IndexedDB local (pendentes que ainda não foram enviadas)
+      if (sessaoId && navigator.onLine) {
+        await supabase.from('bobinas_lidas').delete().eq('sessao_id', sessaoId).eq('lote', codigoParaRemover);
+      }
+      await db.leituras_pendentes
+        .where('lote').equals(codigoParaRemover)
+        .and(item => item.sessao_id === sessaoId)
+        .delete();
       setBobinasLidas(bobinasLidas.filter(b => b.codigo !== codigoParaRemover));
     } catch (erro) { abrirAlerta('Erro', 'Falha ao excluir.'); } finally { setCarregandoAcao(false); }
   }
@@ -1493,13 +1518,32 @@ function App() {
                       </div>
                     )}
                   </div>
-                  {modoInventario === 'COM_ENDERECO' ? (
-                    <button className="vp-btn vp-btn-success" onClick={finalizarGaveta}>
-                      <i className="bi bi-check2-all"></i> {depositosDisponiveis.find(d => d.id === depositoAtual)?.requerEndereco ? 'Finalizar Gaveta' : 'Finalizar Depósito'}
-                    </button>
-                  ) : (
-                    <button className="vp-btn vp-btn-outline-danger" onClick={encerrarInventarioLivre}><i className="bi bi-stop-circle"></i> Encerrar</button>
-                  )}
+                  <div className="d-flex flex-column align-items-end gap-2">
+                    {/* Badge de status de conectividade */}
+                    {!isOnline ? (
+                      <span className="badge vp-badge-offline" title="Sem conexão — leituras salvas localmente">
+                        <span className="vp-badge-dot vp-badge-dot-offline"></span>
+                        Offline {pendingCount > 0 ? `— ${pendingCount} na fila` : ''}
+                      </span>
+                    ) : pendingCount > 0 ? (
+                      <span className="badge vp-badge-syncing" title="Sincronizando leituras pendentes..." onClick={syncNow} style={{cursor:'pointer'}}>
+                        <span className="vp-badge-dot vp-badge-dot-syncing"></span>
+                        Sincronizando {pendingCount}...
+                      </span>
+                    ) : (
+                      <span className="badge vp-badge-online" title="Online — todas as leituras sincronizadas">
+                        <span className="vp-badge-dot vp-badge-dot-online"></span>
+                        Online
+                      </span>
+                    )}
+                    {modoInventario === 'COM_ENDERECO' ? (
+                      <button className="vp-btn vp-btn-success" onClick={finalizarGaveta}>
+                        <i className="bi bi-check2-all"></i> {depositosDisponiveis.find(d => d.id === depositoAtual)?.requerEndereco ? 'Finalizar Gaveta' : 'Finalizar Depósito'}
+                      </button>
+                    ) : (
+                      <button className="vp-btn vp-btn-outline-danger" onClick={encerrarInventarioLivre}><i className="bi bi-stop-circle"></i> Encerrar</button>
+                    )}
+                  </div>
                 </div>
 
                 {usandoDrone ? (<ProcessadorDrone aoConcluir={processarLoteDrone} aoCancelar={() => setUsandoDrone(false)} />) : usandoCamera ? (<Scanner aoLerCodigo={adicionarBobina} aoCancelar={() => setUsandoCamera(false)} />) : (
