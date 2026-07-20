@@ -57,38 +57,8 @@ def sanitizar_codigo(texto):
 
 DIR_ATUAL = os.path.dirname(os.path.abspath(__file__))
 
-def gerar_variacoes_imagem(frame_cinza):
-    """Gera variações de imagem (filtros) para maximizar a decodificação em condições adversas."""
-    variacoes = [frame_cinza]
-    
-    # Variação 2: Threshold Adaptativo (ótimo para sombras e curvas)
-    try:
-        adaptativo = cv2.adaptiveThreshold(
-            frame_cinza, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
-        )
-        variacoes.append(adaptativo)
-    except Exception as e:
-        print(f"[Filtros] Erro ao gerar threshold adaptativo: {e}")
-        
-    # Variação 3: CLAHE (Equalização adaptativa para contraste e brilho)
-    try:
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        contraste = clahe.apply(frame_cinza)
-        variacoes.append(contraste)
-        
-        # Variação 4: Otsu sobre o CLAHE (binarização limpa)
-        try:
-            _, otsu = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            variacoes.append(otsu)
-        except Exception as e:
-            print(f"[Filtros] Erro ao gerar Otsu: {e}")
-    except Exception as e:
-        print(f"[Filtros] Erro ao gerar CLAHE: {e}")
-        
-    return variacoes
-
 def decodificar_frame(frame):
-    """Aplica os filtros de imagem e lê todos os códigos presentes no frame via ZXing."""
+    """Aplica os filtros de imagem e lê todos os códigos presentes no frame via ZXing de forma progressiva (Early Exit)."""
     codigos_do_frame = []
     try:
         # Otimização: Limita o tamanho máximo do frame para reduzir pixels a processar
@@ -102,22 +72,63 @@ def decodificar_frame(frame):
 
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Gera variações do frame
-        variacoes = gerar_variacoes_imagem(frame_gray)
-        
-        # Tenta decodificar cada variação usando zxingcpp
-        for img in variacoes:
-            try:
-                resultados = zxingcpp.read_barcodes(img)
-                for r in resultados:
-                    if r.valid and r.text:
-                        texto_limpo = r.text.strip()
-                        # 5. Sanitização de Dados aplicada
-                        texto_sanitizado = sanitizar_codigo(texto_limpo)
-                        if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
-                            codigos_do_frame.append(texto_sanitizado)
-            except Exception:
-                pass
+        # 1. Tenta decodificar a imagem original em escala de cinza (mais rápido)
+        try:
+            resultados = zxingcpp.read_barcodes(frame_gray)
+            for r in resultados:
+                if r.valid and r.text:
+                    texto_sanitizado = sanitizar_codigo(r.text.strip())
+                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
+                        codigos_do_frame.append(texto_sanitizado)
+        except Exception:
+            pass
+
+        # Early Exit: se já encontrou códigos, pula a geração de filtros pesados
+        if codigos_do_frame:
+            return codigos_do_frame
+
+        # 2. Tenta com Threshold Adaptativo (excelente para curvas e sombras)
+        try:
+            adaptativo = cv2.adaptiveThreshold(
+                frame_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
+            )
+            resultados = zxingcpp.read_barcodes(adaptativo)
+            for r in resultados:
+                if r.valid and r.text:
+                    texto_sanitizado = sanitizar_codigo(r.text.strip())
+                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
+                        codigos_do_frame.append(texto_sanitizado)
+        except Exception:
+            pass
+
+        if codigos_do_frame:
+            return codigos_do_frame
+
+        # 3. Tenta com CLAHE (Contraste)
+        try:
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            contraste = clahe.apply(frame_gray)
+            resultados = zxingcpp.read_barcodes(contraste)
+            for r in resultados:
+                if r.valid and r.text:
+                    texto_sanitizado = sanitizar_codigo(r.text.strip())
+                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
+                        codigos_do_frame.append(texto_sanitizado)
+                        
+            if codigos_do_frame:
+                return codigos_do_frame
+
+            # 4. Tenta com Otsu sobre o CLAHE
+            _, otsu = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            resultados = zxingcpp.read_barcodes(otsu)
+            for r in resultados:
+                if r.valid and r.text:
+                    texto_sanitizado = sanitizar_codigo(r.text.strip())
+                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
+                        codigos_do_frame.append(texto_sanitizado)
+        except Exception:
+            pass
+
     except Exception as e:
         print(f"[ZXing Error] Erro ao processar frame: {e}")
         
