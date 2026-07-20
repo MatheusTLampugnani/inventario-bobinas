@@ -23,10 +23,14 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         try {
             // Usa a variável de ambiente se estiver definida (ex: Render), senão aponta fixo para esta máquina local (10.172.0.130)
             const API_URL = import.meta.env.VITE_API_URL || "http://10.172.0.130:8000";
+            const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
 
             setStatus('Analisando imagens (Visão Computacional)...');
             const resposta = await fetch(`${API_URL}/api/processar-drone`, {
                 method: "POST",
+                headers: {
+                    "X-API-KEY": API_KEY
+                },
                 body: formData,
             });
 
