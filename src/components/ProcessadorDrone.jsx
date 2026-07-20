@@ -4,11 +4,13 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     const [arquivo, setArquivo] = useState(null);
     const [processando, setProcessando] = useState(false);
     const [status, setStatus] = useState('');
+    const [resultado, setResultado] = useState(null);
 
     const lidarComUploadVideo = (e) => {
         const file = e.target.files[0];
         if (file) {
             setArquivo(file);
+            setResultado(null);
         }
     };
 
@@ -39,22 +41,95 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
             }
 
             const dados = await resposta.json();
-
+            
+            // Salva o resultado no estado para exibir as estatísticas
+            setResultado(dados);
             setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
-
-            // Pausa um segundo para o usuário ler o sucesso, e manda para o App.jsx
-            setTimeout(() => {
-                aoConcluir(dados.codigos);
-            }, 1500);
 
         } catch (erro) {
             console.error(erro);
             alert("Erro ao processar vídeo: " + erro.message);
             setStatus('Erro no processamento.');
         } finally {
-            if (status !== 'Sucesso!') setProcessando(false);
+            setProcessando(false);
         }
     };
+
+    const formatarTempo = (segundos) => {
+        const mins = Math.floor(segundos / 60);
+        const segs = Math.floor(segundos % 60);
+        if (mins > 0) {
+            return `${mins}m ${segs}s`;
+        }
+        return `${segundos.toFixed(1)}s`;
+    };
+
+    if (resultado) {
+        const duracaoFormatada = formatarTempo(resultado.duracao_video || 0);
+        const tempoProcessamentoFormatado = `${(resultado.tempo_processamento || 0).toFixed(1)}s`;
+        const multiplicador = resultado.tempo_processamento > 0 
+            ? ((resultado.duracao_video || 0) / resultado.tempo_processamento).toFixed(1) 
+            : '0.0';
+
+        return (
+            <div className="vp-card" style={{ textAlign: 'center', borderColor: 'var(--vp-orange)' }}>
+                <span className="vp-micro-label" style={{ color: 'var(--vp-orange)' }}>Módulo Drone (IA Server)</span>
+                <h3 className="vp-title text-success mb-2">
+                    <i className="bi bi-check-circle-fill me-2"></i>Análise Concluída!
+                </h3>
+                <p className="vp-subtitle mb-4">Veja as estatísticas de processamento do vídeo abaixo.</p>
+
+                <div className="row g-2 mb-4 text-start">
+                    <div className="col-6">
+                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid #6c757d !important' }}>
+                            <span className="small text-secondary fw-bold d-block mb-1">Duração do Vídeo</span>
+                            <span className="fs-5 fw-bold text-dark">{duracaoFormatada}</span>
+                        </div>
+                    </div>
+                    <div className="col-6">
+                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid var(--vp-orange) !important' }}>
+                            <span className="small text-secondary fw-bold d-block mb-1">Tempo de Análise</span>
+                            <span className="fs-5 fw-bold text-dark">{tempoProcessamentoFormatado}</span>
+                        </div>
+                    </div>
+                    <div className="col-6">
+                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid #28a745 !important' }}>
+                            <span className="small text-secondary fw-bold d-block mb-1">Performance IA</span>
+                            <span className="fs-5 fw-bold text-success" style={{ color: '#28a745' }}>
+                                {multiplicador}x <span className="small fs-6 text-secondary fw-normal">veloz</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div className="col-6">
+                        <div className="p-3 border rounded bg-white shadow-sm" style={{ borderLeft: '4px solid #0056b3 !important' }}>
+                            <span className="small text-secondary fw-bold d-block mb-1">Bobinas Detectadas</span>
+                            <span className="fs-5 fw-bold text-primary">{resultado.total_encontrados} un.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', width: '100%', maxWidth: '400px', margin: '0 auto' }}>
+                    <button 
+                        className="vp-btn vp-btn-primary" 
+                        style={{ flex: 1, backgroundColor: 'var(--vp-orange)', border: 'none' }} 
+                        onClick={() => aoConcluir(resultado.codigos)}
+                    >
+                        Confirmar e Importar
+                    </button>
+                    <button 
+                        className="vp-btn vp-btn-outline" 
+                        style={{ flex: 1 }} 
+                        onClick={() => {
+                            setResultado(null);
+                            setArquivo(null);
+                        }}
+                    >
+                        Novo Vídeo
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="vp-card" style={{ textAlign: 'center', borderColor: 'var(--vp-orange)' }}>

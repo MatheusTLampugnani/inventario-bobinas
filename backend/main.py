@@ -11,6 +11,7 @@ import numpy as np
 import zxingcpp
 import uuid
 import re
+import time
 
 app = FastAPI()
 
@@ -127,6 +128,8 @@ async def processar_video_drone(
     file: UploadFile = File(...),
     api_key: str = Security(verificar_api_key)
 ):
+    tempo_inicio = time.time()
+
     # 2. Whitelisting de extensões permitidas
     EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi"}
     _, extensao = os.path.splitext(file.filename)
@@ -152,6 +155,7 @@ async def processar_video_drone(
     # 3. Gerenciamento Seguro com UUID para evitar Path Traversal
     temp_filename = os.path.join(pasta_temp, f"temp_{uuid.uuid4()}{extensao}")
     
+    duracao_video = 0.0
     try:
         # 2. Salva o arquivo em chunks monitorando limite de tamanho em tempo real
         tamanho_acumulado = 0
@@ -172,9 +176,11 @@ async def processar_video_drone(
                 buffer.write(chunk)
 
         cap = cv2.VideoCapture(temp_filename)
+        fps_video = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+        duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
+
         codigos_encontrados = set()
-        
-        fps_video = cap.get(cv2.CAP_PROP_FPS) or 30
         frames_para_pular = max(1, int(fps_video / 5))
         
         frame_anterior_cinza = None
@@ -220,10 +226,15 @@ async def processar_video_drone(
         except Exception as e:
             print(f"[Limpeza] Erro ao remover arquivo temporário {temp_filename}: {e}")
 
+    tempo_fim = time.time()
+    tempo_processamento = tempo_fim - tempo_inicio
+
     return {
         "sucesso": True,
         "total_encontrados": len(codigos_encontrados),
-        "codigos": list(codigos_encontrados)
+        "codigos": list(codigos_encontrados),
+        "tempo_processamento": round(tempo_processamento, 2),
+        "duracao_video": round(duracao_video, 2)
     }
 
 if __name__ == "__main__":
