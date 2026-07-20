@@ -17,35 +17,72 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     const enviarParaServidor = async () => {
         if (!arquivo) return;
         setProcessando(true);
-        setStatus('Fazendo upload do vídeo para o servidor...');
+        setStatus('Preparando envio do arquivo...');
 
         const formData = new FormData();
         formData.append("file", arquivo);
 
-        try {
-            // Usa a variável de ambiente se estiver definida (ex: Render), senão aponta fixo para esta máquina local (10.172.0.130)
-            const API_URL = import.meta.env.VITE_API_URL || "http://10.172.0.130:8000";
-            const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
+        const API_URL = import.meta.env.VITE_API_URL || "http://10.172.0.130:8000";
+        const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
 
-            setStatus('Analisando imagens (Visão Computacional)...');
-            const resposta = await fetch(`${API_URL}/api/processar-drone`, {
-                method: "POST",
-                headers: {
-                    "X-API-KEY": API_KEY
-                },
-                body: formData,
+        // Cria uma Promise para realizar o upload monitorando o progresso da requisição
+        const uploadComProgresso = () => {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+
+                // 1. Acompanhamento em tempo real da porcentagem enviada
+                xhr.upload.onprogress = (evento) => {
+                    if (evento.lengthComputable) {
+                        const porcentagem = Math.round((evento.loaded / evento.total) * 100);
+                        const tamanhoEnviado = (evento.loaded / (1024 * 1024)).toFixed(1);
+                        const tamanhoTotal = (evento.total / (1024 * 1024)).toFixed(1);
+                        setStatus(`Enviando vídeo: ${porcentagem}% (${tamanhoEnviado}MB de ${tamanhoTotal}MB)...`);
+                    }
+                };
+
+                // 2. Quando o upload conclui e o servidor de IA começa a processar os frames
+                xhr.upload.onload = () => {
+                    setStatus('Upload concluído! Analisando imagens (Visão Computacional)...');
+                };
+
+                // 3. Resposta do backend
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const dados = JSON.parse(xhr.responseText);
+                            resolve(dados);
+                        } catch (e) {
+                            reject(new Error("Resposta inválida do servidor."));
+                        }
+                    } else if (xhr.status === 413) {
+                        reject(new Error("O vídeo é muito pesado para o túnel. Limite de 100MB excedido no Cloudflare."));
+                    } else {
+                        reject(new Error(`Falha no servidor (Código HTTP: ${xhr.status}).`));
+                    }
+                };
+
+                // 4. Tratamento de erros de conexão e timeouts
+                xhr.onerror = () => {
+                    reject(new Error("Erro de conexão com a API. Verifique a internet ou o limite de 100MB do túnel."));
+                };
+
+                xhr.ontimeout = () => {
+                    reject(new Error("O tempo limite de envio esgotou. A rede móvel está muito lenta para este arquivo."));
+                };
+
+                xhr.open("POST", `${API_URL}/api/processar-drone`);
+                xhr.setRequestHeader("X-API-KEY", API_KEY);
+                
+                // Timeout longo (5 minutos) para conexões de galpão mais lentas
+                xhr.timeout = 300000; 
+                xhr.send(formData);
             });
+        };
 
-            if (!resposta.ok) {
-                throw new Error("Falha na comunicação com o servidor de IA.");
-            }
-
-            const dados = await resposta.json();
-            
-            // Salva o resultado no estado para exibir as estatísticas
+        try {
+            const dados = await uploadComProgresso();
             setResultado(dados);
             setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
-
         } catch (erro) {
             console.error(erro);
             alert("Erro ao processar vídeo: " + erro.message);
@@ -138,12 +175,27 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
             <p className="vp-subtitle mb-3">Envie a gravação (.MP4 ou .MOV) para decodificação profunda no servidor.</p>
 
             {!arquivo ? (
-                <div style={{ padding: '2rem 0' }}>
-                    <input type="file" accept="video/*" id="videoDrone" onChange={lidarComUploadVideo} style={{ display: 'none' }} />
-                    <label htmlFor="videoDrone" className="vp-btn vp-btn-outline" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)' }}>
-                        📁 Selecionar Vídeo do Drone
-                    </label>
-                    <button className="vp-btn vp-btn-outline" style={{ marginTop: '1rem', marginLeft: '1rem' }} onClick={aoCancelar}>
+                <div style={{ padding: '1rem 0' }}>
+                    <div className="mb-4">
+                        <input type="file" accept="video/*" id="videoDrone" onChange={lidarComUploadVideo} style={{ display: 'none' }} />
+                        <label htmlFor="videoDrone" className="vp-btn vp-btn-outline w-100" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)', maxWidth: '320px', margin: '0 auto', display: 'block' }}>
+                            📁 Selecionar Vídeo do Drone
+                        </label>
+                    </div>
+
+                    {/* Caixa informativa com dicas para celular de operadores no galpão */}
+                    <div className="p-3 border rounded text-start bg-light shadow-sm" style={{ maxWidth: '400px', margin: '0 auto 1.5rem auto', borderLeft: '4px solid var(--vp-orange)' }}>
+                        <h6 className="fw-bold text-dark mb-1" style={{ fontSize: '0.85rem' }}>
+                            💡 Dica de Performance para Celular:
+                        </h6>
+                        <p className="text-secondary m-0" style={{ fontSize: '0.78rem', lineHeight: '1.4' }}>
+                            Vídeos gravados diretamente do celular em Full HD/4K costumam ser muito pesados (ex: 200MB+). 
+                            Configure a câmera para **480p ou 720p (menor resolução)** antes de gravar os corredores. 
+                            Isso reduz o tempo de upload em até 90% e evita bloqueios de tamanho no túnel do galpão (limite máximo de 100MB).
+                        </p>
+                    </div>
+
+                    <button className="vp-btn vp-btn-outline" style={{ display: 'inline-block' }} onClick={aoCancelar}>
                         Voltar
                     </button>
                 </div>
@@ -157,7 +209,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                     </div>
 
                     {processando && (
-                        <div style={{ color: 'var(--vp-orange)', fontWeight: 'bold', margin: '1rem 0' }}>
+                        <div style={{ color: 'var(--vp-orange)', fontWeight: 'bold', margin: '1rem 0', fontSize: '0.9rem' }}>
                             <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
                             {status}
                         </div>
