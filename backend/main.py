@@ -192,7 +192,8 @@ async def processar_video_drone(
         duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
 
         codigos_encontrados = set()
-        frames_para_pular = max(1, int(fps_video / 5))
+        # Alterado de 5 fps para 3 fps para acelerar o processamento mantendo a excelente cobertura de detecção
+        frames_para_pular = max(1, int(fps_video / 3))
         
         frame_anterior_cinza = None
         
