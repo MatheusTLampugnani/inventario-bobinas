@@ -208,9 +208,25 @@ function App() {
 
   const garantirSessao = async () => {
     if (sessaoId) {
-      const { data } = await supabase.from('sessoes_inventario').select('id').eq('id', sessaoId).maybeSingle();
-      if (data) return sessaoId;
+      if (!navigator.onLine) {
+        return sessaoId;
+      }
+      try {
+        const { data } = await supabase.from('sessoes_inventario').select('id').eq('id', sessaoId).maybeSingle();
+        if (data) return sessaoId;
+      } catch (err) {
+        console.warn("Falha de rede ao verificar sessao, usando sessaoId local:", err);
+        return sessaoId;
+      }
     }
+    
+    if (!navigator.onLine) {
+      const idOffline = `offline-${Date.now()}`;
+      setSessaoId(idOffline);
+      sessionStorage.setItem('sessao_id', idOffline);
+      return idOffline;
+    }
+
     const { data, error } = await supabase.from('sessoes_inventario').insert([{ cracha_importacao: crachaLogado, status: 'Em andamento' }]).select('id').single();
     if (error) throw error;
     setSessaoId(data.id);
