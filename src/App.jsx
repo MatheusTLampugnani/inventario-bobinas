@@ -1527,7 +1527,7 @@ function App() {
                           {rotasDisponiveis.map((r) => (<option key={r.id} value={r.id}>{r.rota}</option>))}
                       </select>
                       </div>
-                      <div className="col-6 text-start"><label className="form-label small fw-bold text-secondary mb-2">Gôndola (Opcional)</label><input ref={gondolaInputRef} type="text" className="form-control form-control-lg w-100 text-center shadow-sm" placeholder="Ex: G01" value={gondolaAtual} onChange={e => setGondolaAtual(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && gavetaInputRef.current?.focus()} style={{ height: '54px' }} /></div>
+                      <div className="col-6 text-start"><label className="form-label small fw-bold text-secondary mb-2">Gôndola (Opcional)</label><input ref={gondolaInputRef} type="text" className="form-control form-control-lg w-100 text-center shadow-sm" placeholder="Ex: E" value={gondolaAtual} onChange={e => setGondolaAtual(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && gavetaInputRef.current?.focus()} style={{ height: '54px' }} /></div>
                       <div className="col-6 text-start"><label className="form-label small fw-bold text-secondary mb-1">Gaveta / Posição</label><input ref={gavetaInputRef} type="text" className="vp-input vp-input-lg w-100 text-center shadow-sm vp-input-destaque" placeholder="Ex: A1" value={gavetaAtual} onChange={e => setGavetaAtual(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && avancarParaInformarEndereco()} /></div>
                     </div>
                   )}
