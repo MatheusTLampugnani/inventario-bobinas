@@ -44,6 +44,10 @@ const removerZeros = (val) => {
 };
 
 function App() {
+  // ESTADO DE ATUALIZAÇÃO DO PWA
+  const [swRegistration, setSwRegistration] = useState(null);
+  const [mostrarBannerAtualizacao, setMostrarBannerAtualizacao] = useState(false);
+
   // ESTADOS DE LOGIN E DADOS
   const [crachaLogado, setCrachaLogado] = useState(() => sessionStorage.getItem('usuario_cracha') || '');
   const [nomeLogado, setNomeLogado] = useState(() => sessionStorage.getItem('usuario_nome') || '');
@@ -55,6 +59,13 @@ function App() {
 
   // OFFLINE-FIRST: hook de sincronização automática com IndexedDB
   const { isOnline, pendingCount, syncNow } = useSyncManager();
+
+  const aceitarAtualizacao = () => {
+    if (swRegistration && swRegistration.waiting) {
+      swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+    }
+    setMostrarBannerAtualizacao(false);
+  };
 
   
   // ESTADO ROTAS
@@ -122,6 +133,19 @@ function App() {
         }
     };
     carregarDadosIniciais();
+  }, []);
+
+  useEffect(() => {
+    const lidarComAtualizacao = (event) => {
+      console.log('Nova atualização do Service Worker detectada.');
+      setSwRegistration(event.detail);
+      setMostrarBannerAtualizacao(true);
+    };
+
+    window.addEventListener('pwa-update-available', lidarComAtualizacao);
+    return () => {
+      window.removeEventListener('pwa-update-available', lidarComAtualizacao);
+    };
   }, []);
 
   useEffect(() => {
@@ -1747,6 +1771,23 @@ function App() {
             </>
           )}
         </main>
+
+        {mostrarBannerAtualizacao && (
+          <div className="vp-update-banner">
+            <div className="vp-update-banner-content">
+              <i className="bi bi-cloud-arrow-down-fill me-2 fs-5 text-warning"></i>
+              <span>Nova atualização do Inventário disponível! Deseja aplicar agora?</span>
+            </div>
+            <div className="vp-update-banner-actions">
+              <button className="vp-btn vp-btn-success btn-sm me-1 px-3" onClick={aceitarAtualizacao}>
+                <i className="bi bi-arrow-clockwise"></i> Atualizar
+              </button>
+              <button className="vp-btn vp-btn-ghost-danger btn-sm px-2" onClick={() => setMostrarBannerAtualizacao(false)}>
+                Depois
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
