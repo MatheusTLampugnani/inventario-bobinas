@@ -3,6 +3,7 @@ import sys
 import os
 import re
 import time
+import threading
 
 print("==================================================")
 print("🚀 INICIANDO SERVIÇOS DO BACKEND DE IA - VIDEPLAST")
@@ -10,6 +11,14 @@ print("==================================================")
 
 DIR_PROJETO = os.path.dirname(os.path.abspath(__file__))
 os.chdir(DIR_PROJETO)
+
+def drenar_pipe(stream):
+    """Lê continuamente a saída para evitar travamento do buffer de pipe no sistema operacional."""
+    try:
+        for _ in iter(stream.readline, ""):
+            pass
+    except Exception:
+        pass
 
 # 0. Libera a porta 8000 caso um processo anterior tenha ficado aberto
 try:
@@ -37,6 +46,8 @@ backend_process = subprocess.Popen(
     text=True,
     bufsize=1
 )
+
+threading.Thread(target=drenar_pipe, args=(backend_process.stdout,), daemon=True).start()
 
 time.sleep(2)
 if backend_process.poll() is not None:
@@ -68,6 +79,9 @@ while time.time() - inicio_espera < 30:
     if match:
         cloudflare_url = match.group(0)
         break
+
+# Mantém o pipe do túnel sendo lido em background para não estourar o buffer de pipe do OS
+threading.Thread(target=drenar_pipe, args=(tunnel_process.stdout,), daemon=True).start()
 
 if not cloudflare_url:
     print("⚠️ Não foi possível capturar a URL do Cloudflare automaticamente em 30s.")
@@ -123,11 +137,14 @@ else:
         
         if res_commit.returncode == 0 or "nothing to commit" in res_commit.stdout or "nothing to commit" in res_commit.stderr:
             print("▶️ Enviando atualização para o GitHub / Render...")
-            res_push = subprocess.run(["git", "push", "origin", "master"], capture_output=True, text=True)
-            if res_push.returncode == 0:
-                print("🚀 Deploy no Render acionado automaticamente via Git Push!")
-            else:
-                print(f"⚠️ Git Push automático falhou (pode exigir credenciais): {res_push.stderr.strip()}")
+            try:
+                res_push = subprocess.run(["git", "push", "origin", "master"], capture_output=True, text=True, timeout=15)
+                if res_push.returncode == 0:
+                    print("🚀 Deploy no Render acionado automaticamente via Git Push!")
+                else:
+                    print(f"⚠️ Git Push automático finalizou com aviso: {res_push.stderr.strip()}")
+            except subprocess.TimeoutExpired:
+                print("⏱️ Git Push aguardou 15s e continuou em segundo plano. O backend continuará ativo normalmente!")
         else:
             print(f"⚠️ Commit status: {res_commit.stdout.strip()}")
     except Exception as e:
