@@ -1,8 +1,18 @@
 import React, { useState, useEffect } from 'react';
 
+const URL_ATUAL_FIXA = "https://jan-columnists-vertex-lightbox.trycloudflare.com";
+
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
-    const apiPadrao = import.meta.env.VITE_API_URL || "http://10.172.0.130:8000";
-    const [urlApi, setUrlApi] = useState(() => localStorage.getItem("VITE_API_URL_CUSTOM") || apiPadrao);
+    const apiPadrao = import.meta.env.VITE_API_URL || URL_ATUAL_FIXA;
+    const [urlApi, setUrlApi] = useState(() => {
+        const custom = localStorage.getItem("VITE_API_URL_CUSTOM");
+        // Auto-limpa URLs antigas do trycloudflare salvas em navegadores de operadores
+        if (custom && custom.includes("trycloudflare.com") && custom !== URL_ATUAL_FIXA) {
+            localStorage.setItem("VITE_API_URL_CUSTOM", URL_ATUAL_FIXA);
+            return URL_ATUAL_FIXA;
+        }
+        return custom || apiPadrao;
+    });
     const [mostrarConfigUrl, setMostrarConfigUrl] = useState(false);
     const [statusBackend, setStatusBackend] = useState('checando'); // 'online' | 'offline' | 'checando'
     const [arquivo, setArquivo] = useState(null);
