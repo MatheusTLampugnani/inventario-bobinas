@@ -1,11 +1,20 @@
 import React, { useState } from 'react';
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
+    const apiPadrao = import.meta.env.VITE_API_URL || "http://10.172.0.130:8000";
+    const [urlApi, setUrlApi] = useState(() => localStorage.getItem("VITE_API_URL_CUSTOM") || apiPadrao);
+    const [mostrarConfigUrl, setMostrarConfigUrl] = useState(false);
     const [arquivo, setArquivo] = useState(null);
     const [processando, setProcessando] = useState(false);
     const [status, setStatus] = useState('');
     const [resultado, setResultado] = useState(null);
     const [tempoTotalEspera, setTempoTotalEspera] = useState(0);
+
+    const salvarUrlCustomizada = (novaUrl) => {
+        const urlSanitizada = novaUrl.trim().replace(/\/+$/, '');
+        setUrlApi(urlSanitizada);
+        localStorage.setItem("VITE_API_URL_CUSTOM", urlSanitizada);
+    };
 
     const lidarComUploadVideo = (e) => {
         const file = e.target.files[0];
@@ -24,7 +33,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         const formData = new FormData();
         formData.append("file", arquivo);
 
-        const API_URL = import.meta.env.VITE_API_URL || "http://10.172.0.130:8000";
+        const API_URL = (urlApi || apiPadrao).trim().replace(/\/+$/, '');
         const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
 
         // Cria uma Promise para realizar o upload monitorando o progresso da requisição
@@ -65,7 +74,8 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
                 // 4. Tratamento de erros de conexão e timeouts
                 xhr.onerror = () => {
-                    reject(new Error("Erro de conexão com a API. Verifique a internet ou o limite de 100MB do túnel."));
+                    setMostrarConfigUrl(true);
+                    reject(new Error("Erro de conexão com a API. Verifique a internet ou configure a nova URL do túnel nas opções abaixo."));
                 };
 
                 xhr.ontimeout = () => {
@@ -250,6 +260,47 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                     </div>
                 </div>
             )}
+
+            {/* Painel de Configuração do Túnel / Servidor Backend */}
+            <div className="mt-4 pt-3 border-top text-center" style={{ maxWidth: '440px', margin: '0 auto' }}>
+                <button 
+                    type="button"
+                    className="btn btn-sm btn-link text-decoration-none text-secondary"
+                    onClick={() => setMostrarConfigUrl(!mostrarConfigUrl)}
+                    style={{ fontSize: '0.8rem' }}
+                >
+                    ⚙️ {mostrarConfigUrl ? 'Ocultar Configuração do Backend' : 'Configurar URL do Servidor (Túnel)'}
+                </button>
+
+                {mostrarConfigUrl && (
+                    <div className="p-3 border rounded bg-white shadow-sm mt-2 text-start" style={{ borderColor: 'var(--vp-orange)' }}>
+                        <label className="form-label small fw-bold text-dark mb-1">
+                            🌐 URL do Backend (Cloudflare / Local):
+                        </label>
+                        <div className="input-group input-group-sm mb-2">
+                            <input 
+                                type="text"
+                                className="form-control font-monospace"
+                                value={urlApi}
+                                onChange={(e) => salvarUrlCustomizada(e.target.value)}
+                                placeholder="https://...trycloudflare.com"
+                                style={{ fontSize: '0.78rem' }}
+                            />
+                            <button 
+                                className="btn btn-outline-secondary"
+                                type="button"
+                                onClick={() => salvarUrlCustomizada(apiPadrao)}
+                                title="Restaurar Padrão"
+                            >
+                                Reset
+                            </button>
+                        </div>
+                        <p className="text-muted m-0" style={{ fontSize: '0.72rem' }}>
+                            Se o backend foi reiniciado e a URL do túnel mudou, cole a nova URL acima. Ela será salva no seu navegador.
+                        </p>
+                    </div>
+                )}
+            </div>
         </div>
     );
 };
