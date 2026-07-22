@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const URL_ATUAL_FIXA = "https://ability-bottles-plugins-mistress.trycloudflare.com";
+const URL_ATUAL_FIXA = "https://telecom-img-atlanta-modifications.trycloudflare.com";
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     const apiPadrao = import.meta.env.VITE_API_URL || URL_ATUAL_FIXA;
