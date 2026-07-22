@@ -37,6 +37,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+@app.get("/api/health")
+async def health_check():
+    return {"status": "online", "servico": "Backend Drone Videplast"}
+
 # 1. Proteção de Acesso (Autenticação baseada em API Key)
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)

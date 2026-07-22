@@ -1,19 +1,50 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     const apiPadrao = import.meta.env.VITE_API_URL || "http://10.172.0.130:8000";
     const [urlApi, setUrlApi] = useState(() => localStorage.getItem("VITE_API_URL_CUSTOM") || apiPadrao);
     const [mostrarConfigUrl, setMostrarConfigUrl] = useState(false);
+    const [statusBackend, setStatusBackend] = useState('checando'); // 'online' | 'offline' | 'checando'
     const [arquivo, setArquivo] = useState(null);
     const [processando, setProcessando] = useState(false);
     const [status, setStatus] = useState('');
     const [resultado, setResultado] = useState(null);
     const [tempoTotalEspera, setTempoTotalEspera] = useState(0);
 
+    const testarConexaoBackend = async (targetUrl) => {
+        setStatusBackend('checando');
+        const baseUrl = (targetUrl || urlApi || apiPadrao).trim().replace(/\/+$/, '');
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+            const res = await fetch(`${baseUrl}/api/health`, {
+                method: 'GET',
+                signal: controller.signal
+            }).catch(async () => {
+                return await fetch(`${baseUrl}/docs`, { method: 'GET', mode: 'no-cors', signal: controller.signal });
+            });
+            clearTimeout(timeoutId);
+
+            if (res && (res.ok || res.type === 'opaque' || res.status === 200)) {
+                setStatusBackend('online');
+            } else {
+                setStatusBackend('offline');
+            }
+        } catch (e) {
+            setStatusBackend('offline');
+        }
+    };
+
+    useEffect(() => {
+        testarConexaoBackend(urlApi);
+    }, [urlApi]);
+
     const salvarUrlCustomizada = (novaUrl) => {
         const urlSanitizada = novaUrl.trim().replace(/\/+$/, '');
         setUrlApi(urlSanitizada);
         localStorage.setItem("VITE_API_URL_CUSTOM", urlSanitizada);
+        testarConexaoBackend(urlSanitizada);
     };
 
     const lidarComUploadVideo = (e) => {
@@ -201,7 +232,37 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
     return (
         <div className="vp-card" style={{ textAlign: 'center', borderColor: 'var(--vp-orange)' }}>
-            <span className="vp-micro-label" style={{ color: 'var(--vp-orange)' }}>Módulo Drone (IA Server)</span>
+            <div className="d-flex justify-content-between align-items-center mb-2">
+                <span className="vp-micro-label m-0" style={{ color: 'var(--vp-orange)' }}>Módulo Drone (IA Server)</span>
+                <div className="d-flex align-items-center">
+                    {statusBackend === 'online' && (
+                        <span className="badge bg-success-subtle text-success border border-success rounded-pill px-3 py-1 fw-bold d-inline-flex align-items-center" style={{ fontSize: '0.78rem' }}>
+                            <span className="spinner-grow spinner-grow-sm me-1" role="status" aria-hidden="true" style={{ width: '8px', height: '8px' }}></span>
+                            ● ONLINE
+                        </span>
+                    )}
+                    {statusBackend === 'offline' && (
+                        <span className="badge bg-danger-subtle text-danger border border-danger rounded-pill px-3 py-1 fw-bold d-inline-flex align-items-center" style={{ fontSize: '0.78rem' }}>
+                            ● OFFLINE
+                        </span>
+                    )}
+                    {statusBackend === 'checando' && (
+                        <span className="badge bg-warning-subtle text-warning border border-warning rounded-pill px-3 py-1 fw-bold d-inline-flex align-items-center" style={{ fontSize: '0.78rem' }}>
+                            <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" style={{ width: '10px', height: '10px' }}></span>
+                            Checando...
+                        </span>
+                    )}
+                    <button 
+                        type="button" 
+                        className="btn btn-sm text-secondary p-0 ms-2" 
+                        onClick={() => testarConexaoBackend(urlApi)}
+                        title="Re-testar conexão com o servidor"
+                        style={{ fontSize: '0.9rem', lineHeight: 1 }}
+                    >
+                        <i className="bi bi-arrow-clockwise"></i>
+                    </button>
+                </div>
+            </div>
             <h3 className="vp-title">Análise de Vídeo em Nuvem</h3>
             <p className="vp-subtitle mb-3">Envie a gravação (.MP4 ou .MOV) para decodificação profunda no servidor.</p>
 
