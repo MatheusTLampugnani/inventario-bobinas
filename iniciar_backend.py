@@ -11,6 +11,16 @@ print("==================================================")
 DIR_PROJETO = os.path.dirname(os.path.abspath(__file__))
 os.chdir(DIR_PROJETO)
 
+# 0. Libera a porta 8000 caso um processo anterior tenha ficado aberto
+try:
+    subprocess.run(
+        ["cmd", "/c", "for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :8000') do taskkill /f /pid %a >nul 2>&1"],
+        capture_output=True
+    )
+    time.sleep(1)
+except Exception:
+    pass
+
 # 1. Identifica o Python do ambiente virtual se existir, senao usa o do sistema
 python_exe = os.path.join(DIR_PROJETO, "backend", "venv", "Scripts", "python.exe")
 if not os.path.exists(python_exe):
@@ -108,7 +118,7 @@ else:
     # D) Automatiza o Git Commit e Push
     print("\n🔄 Sincronizando com GitHub / Render (Git Commit & Push)...")
     try:
-        subprocess.run(["git", "add", "src/components/ProcessadorDrone.jsx", "cloudflare_url.txt", ".env"], check=True)
+        subprocess.run(["git", "add", "src/components/ProcessadorDrone.jsx", "cloudflare_url.txt"], check=True)
         res_commit = subprocess.run(["git", "commit", "-m", f"chore: atualiza URL do tunel Cloudflare para {cloudflare_url}"], capture_output=True, text=True)
         
         if res_commit.returncode == 0 or "nothing to commit" in res_commit.stdout or "nothing to commit" in res_commit.stderr:
