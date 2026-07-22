@@ -30,17 +30,19 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
             const res = await fetch(`${baseUrl}/api/health`, {
                 method: 'GET',
+                headers: { 'Accept': 'application/json' },
                 signal: controller.signal
-            }).catch(async () => {
-                return await fetch(`${baseUrl}/docs`, { method: 'GET', mode: 'no-cors', signal: controller.signal });
             });
             clearTimeout(timeoutId);
 
-            if (res && (res.ok || res.type === 'opaque' || res.status === 200)) {
-                setStatusBackend('online');
-            } else {
-                setStatusBackend('offline');
+            if (res && res.ok) {
+                const data = await res.json().catch(() => null);
+                if (data && data.status === 'online') {
+                    setStatusBackend('online');
+                    return;
+                }
             }
+            setStatusBackend('offline');
         } catch (e) {
             setStatusBackend('offline');
         }

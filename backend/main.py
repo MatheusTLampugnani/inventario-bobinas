@@ -1,7 +1,7 @@
 # Instalação das dependências:
 # pip install opencv-python fastapi uvicorn zxing-cpp numpy python-multipart
 
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Security
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Security, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 import cv2
@@ -15,27 +15,18 @@ import time
 
 app = FastAPI()
 
-# 6. Configuração de CORS Restritiva
-ORIGENS_PERMITIDAS = [
-    "https://inventario-bobinas.onrender.com",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
-]
-
-CORS_ORIGINS_ENV = os.environ.get("CORS_ORIGINS")
-if CORS_ORIGINS_ENV:
-    ORIGENS_PERMITIDAS.extend(CORS_ORIGINS_ENV.split(","))
-
-# Remove duplicatas
-ORIGENS_PERMITIDAS = list(set(ORIGENS_PERMITIDAS))
-
+# 6. Configuração de CORS Permissiva
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ORIGENS_PERMITIDAS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    return {"status": "ok"}
 
 @app.get("/")
 @app.get("/api/health")
@@ -47,7 +38,9 @@ API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 API_KEY = os.environ.get("API_KEY", "videplast_segredo_padrao_2026")
 
-async def verificar_api_key(api_key: str = Security(api_key_header)):
+async def verificar_api_key(request: Request, api_key: str = Security(api_key_header)):
+    if request.method == "OPTIONS":
+        return None
     if not api_key or api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Acesso negado: API Key inválida.")
     return api_key
