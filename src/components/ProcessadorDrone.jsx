@@ -3,7 +3,8 @@ import React, { useState, useEffect } from 'react';
 const URL_ATUAL_FIXA = "https://res-russell-promises-references.trycloudflare.com";
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
-    const apiPadrao = import.meta.env.VITE_API_URL || URL_ATUAL_FIXA;
+    // Prioriza a URL_ATUAL_FIXA atualizada pelo script automatizado a cada inicialização
+    const apiPadrao = URL_ATUAL_FIXA || import.meta.env.VITE_API_URL;
     const [urlApi, setUrlApi] = useState(() => {
         const custom = localStorage.getItem("VITE_API_URL_CUSTOM");
         // Auto-limpa URLs antigas do trycloudflare salvas em navegadores de operadores
