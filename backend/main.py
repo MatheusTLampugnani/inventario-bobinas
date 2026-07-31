@@ -62,84 +62,147 @@ if not os.path.exists(DIR_VIDEOS_DRONE):
 # Gerenciador global em memória para tarefas de IA
 TAREFAS_DRONE = {}
 
-def decodificar_frame(frame):
-    """Aplica os filtros de imagem e lê todos os códigos presentes no frame via ZXing de forma progressiva (Early Exit)."""
-    codigos_do_frame = []
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ============================================================
+# Motor de IA v2 — Resolução Nativa + Tiles + Paralelismo
+# ============================================================
+# Diagnóstico real mostrou:
+#   - 1024px: 7 códigos | Nativa 1080p: 9 códigos | Tiles: 8 códigos
+#   - 2 códigos PERDIDOS pela redução a 1024px
+#   - Tiles recuperam códigos pequenos que o frame inteiro não pega
+# ============================================================
+
+KERNEL_SHARPEN = np.array([[-1,-1,-1],[-1,9,-1],[-1,-1,-1]], dtype=np.float32)
+
+def _decodificar_rapido(img_gray):
+    """Decodificação rápida: apenas gray direto + sharpening. Para uso no frame inteiro."""
+    codigos = set()
     try:
-        # Otimização: Limita o tamanho máximo do frame para reduzir pixels a processar
+        for r in zxingcpp.read_barcodes(img_gray):
+            if r.valid and r.text:
+                t = sanitizar_codigo(r.text.strip())
+                if t: codigos.add(t)
+        if codigos:
+            return codigos
+    except Exception:
+        pass
+    try:
+        sharp = cv2.filter2D(img_gray, -1, KERNEL_SHARPEN)
+        for r in zxingcpp.read_barcodes(sharp):
+            if r.valid and r.text:
+                t = sanitizar_codigo(r.text.strip())
+                if t: codigos.add(t)
+    except Exception:
+        pass
+    return codigos
+
+
+def _decodificar_completo(img_gray):
+    """Decodificação completa com todos os filtros. Para uso nas tiles."""
+    codigos = set()
+    
+    # 1. Gray direto
+    try:
+        for r in zxingcpp.read_barcodes(img_gray):
+            if r.valid and r.text:
+                t = sanitizar_codigo(r.text.strip())
+                if t: codigos.add(t)
+        if codigos:
+            return codigos
+    except Exception:
+        pass
+
+    # 2. Sharpening
+    try:
+        sharp = cv2.filter2D(img_gray, -1, KERNEL_SHARPEN)
+        for r in zxingcpp.read_barcodes(sharp):
+            if r.valid and r.text:
+                t = sanitizar_codigo(r.text.strip())
+                if t: codigos.add(t)
+        if codigos:
+            return codigos
+    except Exception:
+        pass
+
+    # 3. Threshold Adaptativo
+    try:
+        adap = cv2.adaptiveThreshold(img_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
+        for r in zxingcpp.read_barcodes(adap):
+            if r.valid and r.text:
+                t = sanitizar_codigo(r.text.strip())
+                if t: codigos.add(t)
+        if codigos:
+            return codigos
+    except Exception:
+        pass
+
+    # 4. CLAHE + Otsu
+    try:
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        contraste = clahe.apply(img_gray)
+        for r in zxingcpp.read_barcodes(contraste):
+            if r.valid and r.text:
+                t = sanitizar_codigo(r.text.strip())
+                if t: codigos.add(t)
+        if codigos:
+            return codigos
+        _, otsu = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        for r in zxingcpp.read_barcodes(otsu):
+            if r.valid and r.text:
+                t = sanitizar_codigo(r.text.strip())
+                if t: codigos.add(t)
+    except Exception:
+        pass
+
+    return codigos
+
+
+def decodificar_frame_v2(frame):
+    """Motor v2: Resolução nativa com early exit + Tiles sob demanda."""
+    codigos_total = set()
+    try:
         altura, largura = frame.shape[:2]
-        max_dim = 1024
-        if max(altura, largura) > max_dim:
-            escala = max_dim / max(altura, largura)
-            nova_largura = int(largura * escala)
-            nova_altura = int(altura * escala)
-            frame = cv2.resize(frame, (nova_largura, nova_altura), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # 1. Tenta decodificar a imagem original em escala de cinza (mais rápido)
-        try:
-            resultados = zxingcpp.read_barcodes(frame_gray)
-            for r in resultados:
-                if r.valid and r.text:
-                    texto_sanitizado = sanitizar_codigo(r.text.strip())
-                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
-                        codigos_do_frame.append(texto_sanitizado)
-        except Exception:
-            pass
+        # === Passo 1: Frame inteiro — decodificação RÁPIDA (gray + sharpen) ===
+        codigos_total.update(_decodificar_rapido(gray))
+        if codigos_total:
+            return list(codigos_total)  # Early exit — não precisa de tiles
 
-        # Early Exit: se já encontrou códigos, pula a geração de filtros pesados
-        if codigos_do_frame:
-            return codigos_do_frame
+        # === Passo 2: Tiles (só se frame inteiro não encontrou nada) ===
+        meio_h, meio_w = altura // 2, largura // 2
+        tiles = [
+            gray[0:meio_h, 0:meio_w],              # top-left
+            gray[0:meio_h, meio_w:largura],         # top-right
+            gray[meio_h:altura, 0:meio_w],          # bottom-left
+            gray[meio_h:altura, meio_w:largura],    # bottom-right
+            gray[altura//4:3*altura//4, largura//4:3*largura//4],  # centro
+        ]
+        for tile in tiles:
+            codigos_total.update(_decodificar_completo(tile))
 
-        # 2. Tenta com Threshold Adaptativo (excelente para curvas e sombras)
-        try:
-            adaptativo = cv2.adaptiveThreshold(
-                frame_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
-            )
-            resultados = zxingcpp.read_barcodes(adaptativo)
-            for r in resultados:
-                if r.valid and r.text:
-                    texto_sanitizado = sanitizar_codigo(r.text.strip())
-                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
-                        codigos_do_frame.append(texto_sanitizado)
-        except Exception:
-            pass
-
-        if codigos_do_frame:
-            return codigos_do_frame
-
-        # 3. Tenta com CLAHE (Contraste)
-        try:
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            contraste = clahe.apply(frame_gray)
-            resultados = zxingcpp.read_barcodes(contraste)
-            for r in resultados:
-                if r.valid and r.text:
-                    texto_sanitizado = sanitizar_codigo(r.text.strip())
-                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
-                        codigos_do_frame.append(texto_sanitizado)
-                        
-            if codigos_do_frame:
-                return codigos_do_frame
-
-            # 4. Tenta com Otsu sobre o CLAHE
-            _, otsu = cv2.threshold(contraste, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            resultados = zxingcpp.read_barcodes(otsu)
-            for r in resultados:
-                if r.valid and r.text:
-                    texto_sanitizado = sanitizar_codigo(r.text.strip())
-                    if texto_sanitizado and texto_sanitizado not in codigos_do_frame:
-                        codigos_do_frame.append(texto_sanitizado)
-        except Exception:
-            pass
+        # === Passo 3: Fallback 50% (se nada encontrado ainda) ===
+        if not codigos_total and max(altura, largura) > 1280:
+            frame_small = cv2.resize(gray, (largura // 2, altura // 2), interpolation=cv2.INTER_AREA)
+            codigos_total.update(_decodificar_completo(frame_small))
 
     except Exception as e:
         print(f"[ZXing Error] Erro ao processar frame: {e}")
-        
-    return codigos_do_frame
 
-import threading
+    return list(codigos_total)
+
+
+def _processar_frame_worker(frame, codigos_globais_lock, codigos_encontrados):
+    """Worker para processamento paralelo de frames."""
+    novos = decodificar_frame_v2(frame)
+    if novos:
+        with codigos_globais_lock:
+            for cod in novos:
+                codigos_encontrados.add(cod)
+    return len(novos)
+
 
 def _executar_processamento_background(task_id: str, caminho_video: str, eh_temporario: bool):
     try:
@@ -155,47 +218,82 @@ def _executar_processamento_background(task_id: str, caminho_video: str, eh_temp
         fps_video = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
+        largura = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        altura = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         codigos_encontrados = set()
-        frames_para_pular = max(1, int(fps_video / 2))
+        codigos_lock = threading.Lock()
+
+        # v2: Amostragem a 4fps (dobro do anterior) para não perder etiquetas visíveis brevemente
+        frames_para_pular = max(1, int(fps_video / 4))
         frame_anterior_cinza = None
         frame_idx = 0
+        frames_processados = 0
 
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            porcentagem = int((frame_idx / total_frames) * 100) if total_frames > 0 else 0
-            TAREFAS_DRONE[task_id]["porcentagem"] = min(99, porcentagem)
-            TAREFAS_DRONE[task_id]["total_encontrados"] = len(codigos_encontrados)
+        print(f"[IA v2] Processando: {os.path.basename(caminho_video)}")
+        print(f"[IA v2] Video: {largura}x{altura} @ {fps_video}fps, {total_frames} frames, {duracao_video:.1f}s")
+        print(f"[IA v2] Amostragem: 1 frame a cada {frames_para_pular} ({fps_video/frames_para_pular:.1f} fps efetivo)")
+        print(f"[IA v2] Motor: Resolução nativa + 5 tiles + sharpening + fallback 50%")
 
-            frame_pequeno = cv2.resize(frame, (256, 256))
-            frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
+        # ThreadPoolExecutor para processar frames em paralelo (IO-bound pelo decode do ZXing)
+        max_workers = min(4, os.cpu_count() or 2)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
             
-            processar = True
-            if frame_anterior_cinza is not None:
-                diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
-                mean_diff = np.mean(diff) / 255.0
-                if mean_diff < 0.005:
-                    processar = False
-                    
-            frame_anterior_cinza = frame_cinza
-            
-            if processar:
-                novos_codigos = decodificar_frame(frame)
-                for cod in novos_codigos:
-                    codigos_encontrados.add(cod)
-
-            frame_idx += 1
-            for _ in range(frames_para_pular - 1):
-                if not cap.grab():
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
                     break
+
+                porcentagem = int((frame_idx / total_frames) * 100) if total_frames > 0 else 0
+                TAREFAS_DRONE[task_id]["porcentagem"] = min(99, porcentagem)
+                TAREFAS_DRONE[task_id]["total_encontrados"] = len(codigos_encontrados)
+
+                # Filtro de movimento: descarta frames estáticos (câmera parada)
+                frame_pequeno = cv2.resize(frame, (256, 256))
+                frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
+
+                processar = True
+                if frame_anterior_cinza is not None:
+                    diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
+                    mean_diff = np.mean(diff) / 255.0
+                    # v2: Threshold mais baixo (0.003 vs 0.005) para não descartar frames úteis
+                    if mean_diff < 0.003:
+                        processar = False
+
+                frame_anterior_cinza = frame_cinza
+
+                if processar:
+                    # Submete o frame para processamento paralelo
+                    future = executor.submit(_processar_frame_worker, frame.copy(), codigos_lock, codigos_encontrados)
+                    futures.append(future)
+                    frames_processados += 1
+
+                    # Limita o backlog de futures para não estourar memória
+                    if len(futures) > max_workers * 3:
+                        done_futures = [f for f in futures if f.done()]
+                        futures = [f for f in futures if not f.done()]
+
                 frame_idx += 1
+                for _ in range(frames_para_pular - 1):
+                    if not cap.grab():
+                        break
+                    frame_idx += 1
+
+            # Aguarda todos os futures pendentes completarem
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"[IA v2 Worker Error] {e}")
 
         cap.release()
         tempo_fim = time.time()
         tempo_processamento = tempo_fim - tempo_inicio
+
+        print(f"[IA v2] Concluído: {len(codigos_encontrados)} códigos em {tempo_processamento:.1f}s")
+        print(f"[IA v2] Frames processados: {frames_processados} de {total_frames} ({frames_processados/max(1,total_frames)*100:.1f}%)")
 
         TAREFAS_DRONE[task_id] = {
             "status": "concluido",
@@ -204,7 +302,9 @@ def _executar_processamento_background(task_id: str, caminho_video: str, eh_temp
             "total_encontrados": len(codigos_encontrados),
             "codigos": list(codigos_encontrados),
             "tempo_processamento": round(tempo_processamento, 2),
-            "duracao_video": round(duracao_video, 2)
+            "duracao_video": round(duracao_video, 2),
+            "frames_processados": frames_processados,
+            "motor_versao": "v2"
         }
 
     except Exception as e:
