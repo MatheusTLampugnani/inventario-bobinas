@@ -34,34 +34,55 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
     const testarConexaoBackend = async (targetUrl) => {
         setStatusBackend('checando');
-        const baseUrl = (targetUrl || urlApi || apiPadrao).trim().replace(/\/+$/, '');
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 4000);
+        let baseUrl = (targetUrl || urlApi || apiPadrao).trim().replace(/\/+$/, '');
 
-            const res = await fetch(`${baseUrl}/api/health`, {
-                method: 'GET',
-                headers: { 'Accept': 'application/json' },
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
+        const tentarUrl = async (url) => {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3500);
 
-            if (res && res.ok) {
-                const data = await res.json().catch(() => null);
-                if (data && data.status === 'online') {
-                    setStatusBackend('online');
-                    return;
+                const res = await fetch(`${url}/api/health`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (res && res.ok) {
+                    const data = await res.json().catch(() => null);
+                    if (data && data.status === 'online') {
+                        return true;
+                    }
                 }
+            } catch (e) {
+                return false;
             }
-            setStatusBackend('offline');
-        } catch (e) {
+            return false;
+        };
+
+        let ok = await tentarUrl(baseUrl);
+
+        // Fallback automático para 127.0.0.1:8000 se a URL do Cloudflare estiver inacessível
+        if (!ok && !baseUrl.includes("127.0.0.1") && !baseUrl.includes("localhost")) {
+            const localOk = await tentarUrl("http://127.0.0.1:8000");
+            if (localOk) {
+                baseUrl = "http://127.0.0.1:8000";
+                setUrlApi(baseUrl);
+                localStorage.setItem("VITE_API_URL_CUSTOM", baseUrl);
+                ok = true;
+            }
+        }
+
+        if (ok) {
+            setStatusBackend('online');
+        } else {
             setStatusBackend('offline');
         }
     };
 
     const carregarVideosLocais = async () => {
         setCarregandoVideosLocais(true);
-        const API_URL = (urlApi || apiPadrao).trim().replace(/\/+$/, '');
+        const API_URL = (urlApi || apiPadrao || "http://127.0.0.1:8000").trim().replace(/\/+$/, '');
         const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
 
         try {
@@ -79,6 +100,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                 if (data.arquivos && data.arquivos.length > 0) {
                     setVideoLocalSelecionado(data.arquivos[0].nome);
                 }
+                setStatusBackend('online');
             }
         } catch (e) {
             console.error("Erro ao listar vídeos locais:", e);
@@ -92,10 +114,10 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     }, [urlApi]);
 
     useEffect(() => {
-        if (modoEnvio === 'local_folder' && statusBackend === 'online') {
+        if (modoEnvio === 'local_folder') {
             carregarVideosLocais();
         }
-    }, [modoEnvio, statusBackend]);
+    }, [modoEnvio, statusBackend, urlApi]);
 
     const salvarUrlCustomizada = (novaUrl) => {
         const urlSanitizada = novaUrl.trim().replace(/\/+$/, '');
@@ -583,20 +605,28 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                                 className="form-control font-monospace"
                                 value={urlApi}
                                 onChange={(e) => salvarUrlCustomizada(e.target.value)}
-                                placeholder="https://...trycloudflare.com"
+                                placeholder="https://...trycloudflare.com ou http://127.0.0.1:8000"
                                 style={{ fontSize: '0.78rem' }}
                             />
+                            <button 
+                                className="btn btn-outline-primary"
+                                type="button"
+                                onClick={() => salvarUrlCustomizada("http://127.0.0.1:8000")}
+                                title="Usar Servidor Local deste computador"
+                            >
+                                💻 Local
+                            </button>
                             <button 
                                 className="btn btn-outline-secondary"
                                 type="button"
                                 onClick={() => salvarUrlCustomizada(apiPadrao)}
-                                title="Restaurar Padrão"
+                                title="Restaurar Padrão Cloudflare"
                             >
                                 Reset
                             </button>
                         </div>
                         <p className="text-muted m-0" style={{ fontSize: '0.72rem' }}>
-                            Se o backend foi reiniciado e a URL do túnel mudou, cole a nova URL acima. Ela será salva no seu navegador.
+                            Se você está rodando no computador local, clique em <strong>💻 Local</strong>. Se estiver acessando de outro aparelho/celular na nuvem, cole a URL do Cloudflare acima.
                         </p>
                     </div>
                 )}
