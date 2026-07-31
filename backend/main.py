@@ -59,6 +59,9 @@ DIR_VIDEOS_DRONE = os.path.join(DIR_ATUAL, "videos_drone")
 if not os.path.exists(DIR_VIDEOS_DRONE):
     os.makedirs(DIR_VIDEOS_DRONE)
 
+# Gerenciador global em memória para tarefas de IA
+TAREFAS_DRONE = {}
+
 def decodificar_frame(frame):
     """Aplica os filtros de imagem e lê todos os códigos presentes no frame via ZXing de forma progressiva (Early Exit)."""
     codigos_do_frame = []
@@ -136,59 +139,86 @@ def decodificar_frame(frame):
         
     return codigos_do_frame
 
-def processar_video_path(caminho_video: str):
-    tempo_inicio = time.time()
-    cap = cv2.VideoCapture(caminho_video)
-    if not cap.isOpened():
-        raise HTTPException(status_code=400, detail="Não foi possível abrir o arquivo de vídeo.")
+import threading
 
-    fps_video = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
-    duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
+def _executar_processamento_background(task_id: str, caminho_video: str, eh_temporario: bool):
+    try:
+        tempo_inicio = time.time()
+        cap = cv2.VideoCapture(caminho_video)
+        if not cap.isOpened():
+            TAREFAS_DRONE[task_id] = {
+                "status": "erro",
+                "erro": "Não foi possível abrir o arquivo de vídeo."
+            }
+            return
 
-    codigos_encontrados = set()
-    # Otimizado para 2 fps (1 frame a cada 0.5s), acelerando a análise sem perder etiquetas nas prateleiras
-    frames_para_pular = max(1, int(fps_video / 2))
-    frame_anterior_cinza = None
+        fps_video = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        frame_pequeno = cv2.resize(frame, (256, 256))
-        frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
-        
-        processar = True
-        if frame_anterior_cinza is not None:
-            diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
-            mean_diff = np.mean(diff) / 255.0
-            if mean_diff < 0.005:
-                processar = False
-                
-        frame_anterior_cinza = frame_cinza
-        
-        if processar:
-            novos_codigos = decodificar_frame(frame)
-            for cod in novos_codigos:
-                codigos_encontrados.add(cod)
+        codigos_encontrados = set()
+        frames_para_pular = max(1, int(fps_video / 2))
+        frame_anterior_cinza = None
+        frame_idx = 0
 
-        for _ in range(frames_para_pular - 1):
-            if not cap.grab():
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
                 break
+            
+            porcentagem = int((frame_idx / total_frames) * 100) if total_frames > 0 else 0
+            TAREFAS_DRONE[task_id]["porcentagem"] = min(99, porcentagem)
+            TAREFAS_DRONE[task_id]["total_encontrados"] = len(codigos_encontrados)
 
-    cap.release()
+            frame_pequeno = cv2.resize(frame, (256, 256))
+            frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
+            
+            processar = True
+            if frame_anterior_cinza is not None:
+                diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
+                mean_diff = np.mean(diff) / 255.0
+                if mean_diff < 0.005:
+                    processar = False
+                    
+            frame_anterior_cinza = frame_cinza
+            
+            if processar:
+                novos_codigos = decodificar_frame(frame)
+                for cod in novos_codigos:
+                    codigos_encontrados.add(cod)
 
-    tempo_fim = time.time()
-    tempo_processamento = tempo_fim - tempo_inicio
+            frame_idx += 1
+            for _ in range(frames_para_pular - 1):
+                if not cap.grab():
+                    break
+                frame_idx += 1
 
-    return {
-        "sucesso": True,
-        "total_encontrados": len(codigos_encontrados),
-        "codigos": list(codigos_encontrados),
-        "tempo_processamento": round(tempo_processamento, 2),
-        "duracao_video": round(duracao_video, 2)
-    }
+        cap.release()
+        tempo_fim = time.time()
+        tempo_processamento = tempo_fim - tempo_inicio
+
+        TAREFAS_DRONE[task_id] = {
+            "status": "concluido",
+            "sucesso": True,
+            "porcentagem": 100,
+            "total_encontrados": len(codigos_encontrados),
+            "codigos": list(codigos_encontrados),
+            "tempo_processamento": round(tempo_processamento, 2),
+            "duracao_video": round(duracao_video, 2)
+        }
+
+    except Exception as e:
+        print(f"[IA Task Error] Erro no processamento em background: {e}")
+        TAREFAS_DRONE[task_id] = {
+            "status": "erro",
+            "erro": str(e)
+        }
+    finally:
+        if eh_temporario and os.path.exists(caminho_video):
+            try:
+                os.remove(caminho_video)
+            except Exception:
+                pass
 
 class ProcessarLocalPayload(BaseModel):
     filename: str
@@ -221,6 +251,12 @@ def listar_videos_locais(api_key: str = Security(verificar_api_key)):
         "arquivos": arquivos
     }
 
+@app.get("/api/status-drone/{task_id}")
+def obter_status_drone(task_id: str, api_key: str = Security(verificar_api_key)):
+    if task_id not in TAREFAS_DRONE:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    return TAREFAS_DRONE[task_id]
+
 @app.post("/api/processar-drone-local")
 def processar_video_drone_local(
     payload: ProcessarLocalPayload,
@@ -235,7 +271,25 @@ def processar_video_drone_local(
     if not os.path.exists(caminho_completo):
         raise HTTPException(status_code=404, detail=f"Arquivo '{nome_seguro}' não encontrado na pasta {DIR_VIDEOS_DRONE}.")
     
-    return processar_video_path(caminho_completo)
+    task_id = str(uuid.uuid4())
+    TAREFAS_DRONE[task_id] = {
+        "status": "processando",
+        "porcentagem": 0,
+        "total_encontrados": 0
+    }
+    
+    t = threading.Thread(
+        target=_executar_processamento_background,
+        args=(task_id, caminho_completo, False),
+        daemon=True
+    )
+    t.start()
+
+    return {
+        "sucesso": True,
+        "task_id": task_id,
+        "status": "processando"
+    }
 
 @app.post("/api/processar-drone")
 def processar_video_drone(
@@ -282,15 +336,33 @@ def processar_video_drone(
                     )
                 buffer.write(chunk)
 
-        resultado = processar_video_path(temp_filename)
-        return resultado
+        task_id = str(uuid.uuid4())
+        TAREFAS_DRONE[task_id] = {
+            "status": "processando",
+            "porcentagem": 0,
+            "total_encontrados": 0
+        }
+        
+        t = threading.Thread(
+            target=_executar_processamento_background,
+            args=(task_id, temp_filename, True),
+            daemon=True
+        )
+        t.start()
 
-    finally:
-        try:
-            if os.path.exists(temp_filename):
+        return {
+            "sucesso": True,
+            "task_id": task_id,
+            "status": "processando"
+        }
+
+    except Exception as e:
+        if os.path.exists(temp_filename):
+            try:
                 os.remove(temp_filename)
-        except Exception as e:
-            print(f"[Limpeza] Erro ao remover arquivo temporário {temp_filename}: {e}")
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
