@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const URL_ATUAL_FIXA = "https://tail-agree-quick-pics.trycloudflare.com";
+const URL_ATUAL_FIXA = "https://highway-bread-quantities-lovers.trycloudflare.com";
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     // Prioriza a URL_ATUAL_FIXA atualizada pelo script automatizado a cada inicialização
@@ -16,7 +16,17 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     });
     const [mostrarConfigUrl, setMostrarConfigUrl] = useState(false);
     const [statusBackend, setStatusBackend] = useState('checando'); // 'online' | 'offline' | 'checando'
+    const [modoEnvio, setModoEnvio] = useState('upload'); // 'upload' | 'local_folder'
+    
+    // Estados do Modo Upload
     const [arquivo, setArquivo] = useState(null);
+
+    // Estados do Modo Pasta Local
+    const [videosLocais, setVideosLocais] = useState([]);
+    const [caminhoPastaLocal, setCaminhoPastaLocal] = useState('');
+    const [videoLocalSelecionado, setVideoLocalSelecionado] = useState('');
+    const [carregandoVideosLocais, setCarregandoVideosLocais] = useState(false);
+
     const [processando, setProcessando] = useState(false);
     const [status, setStatus] = useState('');
     const [resultado, setResultado] = useState(null);
@@ -49,9 +59,43 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         }
     };
 
+    const carregarVideosLocais = async () => {
+        setCarregandoVideosLocais(true);
+        const API_URL = (urlApi || apiPadrao).trim().replace(/\/+$/, '');
+        const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
+
+        try {
+            const res = await fetch(`${API_URL}/api/videos-locais`, {
+                method: 'GET',
+                headers: {
+                    'X-API-KEY': API_KEY,
+                    'Accept': 'application/json'
+                }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setVideosLocais(data.arquivos || []);
+                setCaminhoPastaLocal(data.caminho_pasta || '');
+                if (data.arquivos && data.arquivos.length > 0) {
+                    setVideoLocalSelecionado(data.arquivos[0].nome);
+                }
+            }
+        } catch (e) {
+            console.error("Erro ao listar vídeos locais:", e);
+        } finally {
+            setCarregandoVideosLocais(false);
+        }
+    };
+
     useEffect(() => {
         testarConexaoBackend(urlApi);
     }, [urlApi]);
+
+    useEffect(() => {
+        if (modoEnvio === 'local_folder' && statusBackend === 'online') {
+            carregarVideosLocais();
+        }
+    }, [modoEnvio, statusBackend]);
 
     const salvarUrlCustomizada = (novaUrl) => {
         const urlSanitizada = novaUrl.trim().replace(/\/+$/, '');
@@ -68,6 +112,44 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         }
     };
 
+    const processarVideoLocal = async () => {
+        if (!videoLocalSelecionado) return;
+        setProcessando(true);
+        setStatus('Lendo arquivo direto do disco local (0s upload)...');
+        const tInicio = Date.now();
+
+        const API_URL = (urlApi || apiPadrao).trim().replace(/\/+$/, '');
+        const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
+
+        try {
+            const res = await fetch(`${API_URL}/api/processar-drone-local`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-KEY': API_KEY
+                },
+                body: JSON.stringify({ filename: videoLocalSelecionado })
+            });
+
+            if (res.ok) {
+                const dados = await res.json();
+                const tTotal = (Date.now() - tInicio) / 1000;
+                setTempoTotalEspera(tTotal);
+                setResultado(dados);
+                setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
+            } else {
+                const errData = await res.json().catch(() => null);
+                throw new Error(errData?.detail || `Erro HTTP ${res.status}`);
+            }
+        } catch (erro) {
+            console.error(erro);
+            alert("Erro ao processar vídeo local: " + erro.message);
+            setStatus('Erro no processamento.');
+        } finally {
+            setProcessando(false);
+        }
+    };
+
     const enviarParaServidor = async () => {
         if (!arquivo) return;
         setProcessando(true);
@@ -80,12 +162,10 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         const API_URL = (urlApi || apiPadrao).trim().replace(/\/+$/, '');
         const API_KEY = import.meta.env.VITE_API_KEY || "videplast_segredo_padrao_2026";
 
-        // Cria uma Promise para realizar o upload monitorando o progresso da requisição
         const uploadComProgresso = () => {
             return new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
 
-                // 1. Acompanhamento em tempo real da porcentagem enviada
                 xhr.upload.onprogress = (evento) => {
                     if (evento.lengthComputable) {
                         const porcentagem = Math.round((evento.loaded / evento.total) * 100);
@@ -95,12 +175,10 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                     }
                 };
 
-                // 2. Quando o upload conclui e o servidor de IA começa a processar os frames
                 xhr.upload.onload = () => {
                     setStatus('Upload concluído! Analisando imagens (Visão Computacional)...');
                 };
 
-                // 3. Resposta do backend
                 xhr.onload = () => {
                     if (xhr.status >= 200 && xhr.status < 300) {
                         try {
@@ -116,7 +194,6 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                     }
                 };
 
-                // 4. Tratamento de erros de conexão e timeouts
                 xhr.onerror = () => {
                     setMostrarConfigUrl(true);
                     reject(new Error("Erro de conexão com a API. Verifique a internet ou configure a nova URL do túnel nas opções abaixo."));
@@ -128,8 +205,6 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
                 xhr.open("POST", `${API_URL}/api/processar-drone`);
                 xhr.setRequestHeader("X-API-KEY", API_KEY);
-                
-                // Timeout longo (5 minutos) para conexões de galpão mais lentas
                 xhr.timeout = 300000; 
                 xhr.send(formData);
             });
@@ -166,7 +241,6 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
             ? ((resultado.duracao_video || 0) / resultado.tempo_processamento).toFixed(1) 
             : '0.0';
 
-        // Novos cálculos de tempo de upload e tempo de espera total
         const tempoUpload = Math.max(0, tempoTotalEspera - (resultado.tempo_processamento || 0));
         const tempoUploadFormatado = `${tempoUpload.toFixed(1)}s`;
         const tempoEsperaTotalFormatada = formatarTempo(tempoTotalEspera || 0);
@@ -276,61 +350,159 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                     </button>
                 </div>
             </div>
-            <h3 className="vp-title">Análise de Vídeo em Nuvem</h3>
-            <p className="vp-subtitle mb-3">Envie a gravação (.MP4 ou .MOV) para decodificação profunda no servidor.</p>
+            <h3 className="vp-title mb-2">Análise de Vídeo em Nuvem</h3>
+            
+            {/* Seletor de Modo de Envio */}
+            <div className="d-flex justify-content-center gap-2 mb-3">
+                <button 
+                    type="button" 
+                    className={`btn btn-sm ${modoEnvio === 'upload' ? 'btn-primary' : 'btn-outline-secondary'}`} 
+                    style={modoEnvio === 'upload' ? { backgroundColor: 'var(--vp-orange)', borderColor: 'var(--vp-orange)', fontWeight: 'bold' } : {}}
+                    onClick={() => setModoEnvio('upload')}
+                >
+                    📁 Upload Navegador
+                </button>
+                <button 
+                    type="button" 
+                    className={`btn btn-sm ${modoEnvio === 'local_folder' ? 'btn-primary' : 'btn-outline-secondary'}`}
+                    style={modoEnvio === 'local_folder' ? { backgroundColor: 'var(--vp-orange)', borderColor: 'var(--vp-orange)', fontWeight: 'bold' } : {}}
+                    onClick={() => setModoEnvio('local_folder')}
+                >
+                    ⚡ Pasta Local do Servidor (0s Upload)
+                </button>
+            </div>
 
-            {!arquivo ? (
-                <div style={{ padding: '1rem 0' }}>
-                    <div className="mb-4">
-                        <input type="file" accept="video/*" id="videoDrone" onChange={lidarComUploadVideo} style={{ display: 'none' }} />
-                        <label htmlFor="videoDrone" className="vp-btn vp-btn-outline w-100" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)', maxWidth: '320px', margin: '0 auto', display: 'block' }}>
-                            📁 Selecionar Vídeo do Drone
-                        </label>
-                    </div>
+            {modoEnvio === 'upload' ? (
+                <>
+                    <p className="vp-subtitle mb-3">Envie a gravação (.MP4 ou .MOV) para decodificação profunda no servidor.</p>
 
-                    {/* Caixa informativa com dicas para celular de operadores no galpão */}
-                    <div className="p-3 border rounded text-start bg-light shadow-sm" style={{ maxWidth: '400px', margin: '0 auto 1.5rem auto', borderLeft: '4px solid var(--vp-orange)' }}>
-                        <h6 className="fw-bold text-dark mb-1" style={{ fontSize: '0.85rem' }}>
-                            💡 Dica de Performance para Celular:
-                        </h6>
-                        <p className="text-secondary m-0" style={{ fontSize: '0.78rem', lineHeight: '1.4' }}>
-                            Vídeos gravados diretamente do celular em Full HD/4K costumam ser muito pesados (ex: 200MB+). 
-                            Configure a câmera para **480p ou 720p (menor resolução)** antes de gravar os corredores. 
-                            Isso reduz o tempo de upload em até 90% e evita bloqueios de tamanho no túnel do galpão (limite máximo de 100MB).
-                        </p>
-                    </div>
+                    {!arquivo ? (
+                        <div style={{ padding: '1rem 0' }}>
+                            <div className="mb-4">
+                                <input type="file" accept="video/*" id="videoDrone" onChange={lidarComUploadVideo} style={{ display: 'none' }} />
+                                <label htmlFor="videoDrone" className="vp-btn vp-btn-outline w-100" style={{ borderColor: 'var(--vp-orange)', color: 'var(--vp-orange)', maxWidth: '320px', margin: '0 auto', display: 'block' }}>
+                                    📁 Selecionar Vídeo do Drone
+                                </label>
+                            </div>
 
-                    <button className="vp-btn vp-btn-outline" style={{ display: 'inline-block' }} onClick={aoCancelar}>
-                        Voltar
-                    </button>
-                </div>
+                            <div className="p-3 border rounded text-start bg-light shadow-sm" style={{ maxWidth: '400px', margin: '0 auto 1.5rem auto', borderLeft: '4px solid var(--vp-orange)' }}>
+                                <h6 className="fw-bold text-dark mb-1" style={{ fontSize: '0.85rem' }}>
+                                    💡 Dica de Performance para Celular:
+                                </h6>
+                                <p className="text-secondary m-0" style={{ fontSize: '0.78rem', lineHeight: '1.4' }}>
+                                    Vídeos gravados diretamente do celular em Full HD/4K costumam ser muito pesados (ex: 200MB+). 
+                                    Configure a câmera para **480p ou 720p (menor resolução)** antes de gravar os corredores. 
+                                    Isso reduz o tempo de upload em até 90% e evita bloqueios de tamanho no túnel do galpão (limite máximo de 100MB).
+                                </p>
+                            </div>
+
+                            <button className="vp-btn vp-btn-outline" style={{ display: 'inline-block' }} onClick={aoCancelar}>
+                                Voltar
+                            </button>
+                        </div>
+                    ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+                            <div style={{ padding: '1rem', background: 'var(--vp-surface-alt)', borderRadius: '8px', width: '100%', maxWidth: '400px' }}>
+                                <p className="vp-mono" style={{ margin: 0, fontWeight: 'bold' }}>Arquivo: {arquivo.name}</p>
+                                <p className="vp-subtitle" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
+                                    Tamanho: {(arquivo.size / (1024 * 1024)).toFixed(2)} MB
+                                </p>
+                            </div>
+
+                            {processando && (
+                                <div style={{ color: 'var(--vp-orange)', fontWeight: 'bold', margin: '1rem 0', fontSize: '0.9rem' }}>
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                    {status}
+                                </div>
+                            )}
+
+                            <div style={{ display: 'flex', gap: '1rem', width: '100%', maxWidth: '400px' }}>
+                                {!processando && (
+                                    <>
+                                        <button className="vp-btn vp-btn-primary" style={{ flex: 1, backgroundColor: 'var(--vp-orange)' }} onClick={enviarParaServidor}>
+                                            Enviar para Análise
+                                        </button>
+                                        <button className="vp-btn vp-btn-outline" style={{ flex: 1 }} onClick={() => setArquivo(null)}>
+                                            Trocar Vídeo
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </>
             ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ padding: '1rem', background: 'var(--vp-surface-alt)', borderRadius: '8px', width: '100%', maxWidth: '400px' }}>
-                        <p className="vp-mono" style={{ margin: 0, fontWeight: 'bold' }}>Arquivo: {arquivo.name}</p>
-                        <p className="vp-subtitle" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
-                            Tamanho: {(arquivo.size / (1024 * 1024)).toFixed(2)} MB
+                <div style={{ maxWidth: '440px', margin: '0 auto', textAlign: 'left' }}>
+                    <div className="p-3 border rounded bg-light mb-3" style={{ borderLeft: '4px solid var(--vp-orange)' }}>
+                        <h6 className="fw-bold text-dark mb-1" style={{ fontSize: '0.85rem' }}>
+                            🚀 Leitura Direta do Disco (Sem Upload)
+                        </h6>
+                        <p className="text-secondary mb-2" style={{ fontSize: '0.78rem', lineHeight: '1.4' }}>
+                            Cole seu arquivo de vídeo (`.mp4`, `.mov`, `.avi`) na pasta local do servidor abaixo:
                         </p>
+                        <code className="d-block p-2 bg-white border rounded font-monospace text-dark text-break" style={{ fontSize: '0.75rem' }}>
+                            {caminhoPastaLocal || 'backend/videos_drone'}
+                        </code>
                     </div>
 
-                    {processando && (
-                        <div style={{ color: 'var(--vp-orange)', fontWeight: 'bold', margin: '1rem 0', fontSize: '0.9rem' }}>
-                            <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                            {status}
+                    <div className="d-flex justify-content-between align-items-center mb-2">
+                        <label className="form-label small fw-bold mb-0">Vídeos Encontrados na Pasta Local:</label>
+                        <button 
+                            type="button" 
+                            className="btn btn-sm btn-outline-secondary py-0 px-2"
+                            onClick={carregarVideosLocais}
+                            disabled={carregandoVideosLocais}
+                            style={{ fontSize: '0.78rem' }}
+                        >
+                            {carregandoVideosLocais ? 'Carregando...' : '🔄 Atualizar Lista'}
+                        </button>
+                    </div>
+
+                    {videosLocais.length === 0 ? (
+                        <div className="p-3 border rounded bg-white text-center mb-3">
+                            <p className="text-muted m-0 small">
+                                {carregandoVideosLocais ? 'Buscando arquivos na pasta...' : 'Nenhum vídeo encontrado na pasta backend/videos_drone. Cole um vídeo (.mp4/.mov) nela e clique em Atualizar.'}
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="mb-3">
+                            <select 
+                                className="form-select form-select-sm mb-3"
+                                value={videoLocalSelecionado}
+                                onChange={(e) => setVideoLocalSelecionado(e.target.value)}
+                                disabled={processando}
+                            >
+                                {videosLocais.map((v) => (
+                                    <option key={v.nome} value={v.nome}>
+                                        🎬 {v.nome} ({v.tamanho_mb} MB - {v.data_modificacao})
+                                    </option>
+                                ))}
+                            </select>
+
+                            {processando && (
+                                <div style={{ color: 'var(--vp-orange)', fontWeight: 'bold', margin: '1rem 0', fontSize: '0.9rem' }} className="text-center">
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                    {status}
+                                </div>
+                            )}
+
+                            {!processando && (
+                                <button 
+                                    className="vp-btn vp-btn-primary w-100" 
+                                    style={{ backgroundColor: 'var(--vp-orange)' }}
+                                    onClick={processarVideoLocal}
+                                    disabled={!videoLocalSelecionado}
+                                >
+                                    ⚡ Processar Vídeo Local Instantaneamente
+                                </button>
+                            )}
                         </div>
                     )}
 
-                    <div style={{ display: 'flex', gap: '1rem', width: '100%', maxWidth: '400px' }}>
-                        {!processando && (
-                            <>
-                                <button className="vp-btn vp-btn-primary" style={{ flex: 1, backgroundColor: 'var(--vp-orange)' }} onClick={enviarParaServidor}>
-                                    Enviar para Análise
-                                </button>
-                                <button className="vp-btn vp-btn-outline" style={{ flex: 1 }} onClick={() => setArquivo(null)}>
-                                    Trocar Vídeo
-                                </button>
-                            </>
-                        )}
+                    <div className="text-center mt-3">
+                        <button className="vp-btn vp-btn-outline" style={{ display: 'inline-block' }} onClick={aoCancelar}>
+                            Voltar
+                        </button>
                     </div>
                 </div>
             )}
