@@ -328,7 +328,7 @@ def listar_videos_locais(api_key: str = Security(verificar_api_key)):
     if not os.path.exists(DIR_VIDEOS_DRONE):
         os.makedirs(DIR_VIDEOS_DRONE)
     
-    EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi"}
+    EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi", ".lrf"}
     arquivos = []
     
     for f in os.listdir(DIR_VIDEOS_DRONE):
@@ -396,7 +396,7 @@ def processar_video_drone(
     file: UploadFile = File(...),
     api_key: str = Security(verificar_api_key)
 ):
-    EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi"}
+    EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi", ".lrf"}
     _, extensao = os.path.splitext(file.filename)
     extensao = extensao.lower()
     if extensao not in EXTENSOES_PERMITIDAS:
