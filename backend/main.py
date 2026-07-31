@@ -147,7 +147,8 @@ def processar_video_path(caminho_video: str):
     duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
 
     codigos_encontrados = set()
-    frames_para_pular = max(1, int(fps_video / 3))
+    # Otimizado para 2 fps (1 frame a cada 0.5s), acelerando a análise sem perder etiquetas nas prateleiras
+    frames_para_pular = max(1, int(fps_video / 2))
     frame_anterior_cinza = None
 
     while cap.isOpened():
@@ -193,7 +194,7 @@ class ProcessarLocalPayload(BaseModel):
     filename: str
 
 @app.get("/api/videos-locais")
-async def listar_videos_locais(api_key: str = Security(verificar_api_key)):
+def listar_videos_locais(api_key: str = Security(verificar_api_key)):
     if not os.path.exists(DIR_VIDEOS_DRONE):
         os.makedirs(DIR_VIDEOS_DRONE)
     
@@ -221,7 +222,7 @@ async def listar_videos_locais(api_key: str = Security(verificar_api_key)):
     }
 
 @app.post("/api/processar-drone-local")
-async def processar_video_drone_local(
+def processar_video_drone_local(
     payload: ProcessarLocalPayload,
     api_key: str = Security(verificar_api_key)
 ):
@@ -237,7 +238,7 @@ async def processar_video_drone_local(
     return processar_video_path(caminho_completo)
 
 @app.post("/api/processar-drone")
-async def processar_video_drone(
+def processar_video_drone(
     file: UploadFile = File(...),
     api_key: str = Security(verificar_api_key)
 ):
@@ -267,7 +268,7 @@ async def processar_video_drone(
         tamanho_acumulado = 0
         with open(temp_filename, "wb") as buffer:
             while True:
-                chunk = await file.read(1024 * 1024)
+                chunk = file.file.read(1024 * 1024)
                 if not chunk:
                     break
                 tamanho_acumulado += len(chunk)
