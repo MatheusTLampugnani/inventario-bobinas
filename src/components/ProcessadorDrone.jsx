@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const URL_ATUAL_FIXA = "https://those-luxury-magnitude-alert.trycloudflare.com";
+const URL_ATUAL_FIXA = "https://secrets-participation-subscription-neo.trycloudflare.com";
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     // Prioriza a URL_ATUAL_FIXA atualizada pelo script automatizado a cada inicialização
@@ -112,10 +112,47 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
         }
     };
 
+    const monitorarProgresso = (taskId, API_URL, API_KEY, tInicio) => {
+        const intervalId = setInterval(async () => {
+            try {
+                const res = await fetch(`${API_URL}/api/status-drone/${taskId}`, {
+                    method: 'GET',
+                    headers: {
+                        'X-API-KEY': API_KEY,
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.status === 'processando') {
+                        const pct = data.porcentagem || 0;
+                        const total = data.total_encontrados || 0;
+                        setStatus(`Analisando vídeo de IA: ${pct}% concluído (${total} lotes encontrados até agora)...`);
+                    } else if (data.status === 'concluido') {
+                        clearInterval(intervalId);
+                        const tTotal = (Date.now() - tInicio) / 1000;
+                        setTempoTotalEspera(tTotal);
+                        setResultado(data);
+                        setStatus(`Sucesso! ${data.total_encontrados} códigos lidos.`);
+                        setProcessando(false);
+                    } else if (data.status === 'erro') {
+                        clearInterval(intervalId);
+                        setProcessando(false);
+                        alert("Erro ao processar vídeo: " + (data.erro || "Falha desconhecida."));
+                        setStatus('Erro no processamento.');
+                    }
+                }
+            } catch (e) {
+                console.error("Erro no polling de status:", e);
+            }
+        }, 1500);
+    };
+
     const processarVideoLocal = async () => {
         if (!videoLocalSelecionado) return;
         setProcessando(true);
-        setStatus('Lendo arquivo direto do disco local (0s upload)...');
+        setStatus('Iniciando análise direta no disco local (0s upload)...');
         const tInicio = Date.now();
 
         const API_URL = (urlApi || apiPadrao).trim().replace(/\/+$/, '');
@@ -133,10 +170,15 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
             if (res.ok) {
                 const dados = await res.json();
-                const tTotal = (Date.now() - tInicio) / 1000;
-                setTempoTotalEspera(tTotal);
-                setResultado(dados);
-                setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
+                if (dados.task_id) {
+                    monitorarProgresso(dados.task_id, API_URL, API_KEY, tInicio);
+                } else {
+                    const tTotal = (Date.now() - tInicio) / 1000;
+                    setTempoTotalEspera(tTotal);
+                    setResultado(dados);
+                    setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
+                    setProcessando(false);
+                }
             } else {
                 const errData = await res.json().catch(() => null);
                 throw new Error(errData?.detail || `Erro HTTP ${res.status}`);
@@ -145,7 +187,6 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
             console.error(erro);
             alert("Erro ao processar vídeo local: " + erro.message);
             setStatus('Erro no processamento.');
-        } finally {
             setProcessando(false);
         }
     };
@@ -176,7 +217,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                 };
 
                 xhr.upload.onload = () => {
-                    setStatus('Upload concluído! Analisando imagens (Visão Computacional)...');
+                    setStatus('Upload concluído! Iniciando análise de Visão Computacional...');
                 };
 
                 xhr.onload = () => {
@@ -212,15 +253,19 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
 
         try {
             const dados = await uploadComProgresso();
-            const tTotal = (Date.now() - tInicio) / 1000;
-            setTempoTotalEspera(tTotal);
-            setResultado(dados);
-            setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
+            if (dados.task_id) {
+                monitorarProgresso(dados.task_id, API_URL, API_KEY, tInicio);
+            } else {
+                const tTotal = (Date.now() - tInicio) / 1000;
+                setTempoTotalEspera(tTotal);
+                setResultado(dados);
+                setStatus(`Sucesso! ${dados.total_encontrados} códigos lidos.`);
+                setProcessando(false);
+            }
         } catch (erro) {
             console.error(erro);
             alert("Erro ao processar vídeo: " + erro.message);
             setStatus('Erro no processamento.');
-        } finally {
             setProcessando(false);
         }
     };
