@@ -4,6 +4,7 @@
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Security, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel
 import cv2
 import shutil
 import os
@@ -54,6 +55,9 @@ def sanitizar_codigo(texto):
     return re.sub(r'[^a-zA-Z0-9\s\(\),;\.\-]', '', texto)
 
 DIR_ATUAL = os.path.dirname(os.path.abspath(__file__))
+DIR_VIDEOS_DRONE = os.path.join(DIR_ATUAL, "videos_drone")
+if not os.path.exists(DIR_VIDEOS_DRONE):
+    os.makedirs(DIR_VIDEOS_DRONE)
 
 def decodificar_frame(frame):
     """Aplica os filtros de imagem e lê todos os códigos presentes no frame via ZXing de forma progressiva (Early Exit)."""
@@ -132,14 +136,111 @@ def decodificar_frame(frame):
         
     return codigos_do_frame
 
+def processar_video_path(caminho_video: str):
+    tempo_inicio = time.time()
+    cap = cv2.VideoCapture(caminho_video)
+    if not cap.isOpened():
+        raise HTTPException(status_code=400, detail="Não foi possível abrir o arquivo de vídeo.")
+
+    fps_video = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+    duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
+
+    codigos_encontrados = set()
+    frames_para_pular = max(1, int(fps_video / 3))
+    frame_anterior_cinza = None
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        frame_pequeno = cv2.resize(frame, (256, 256))
+        frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
+        
+        processar = True
+        if frame_anterior_cinza is not None:
+            diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
+            mean_diff = np.mean(diff) / 255.0
+            if mean_diff < 0.005:
+                processar = False
+                
+        frame_anterior_cinza = frame_cinza
+        
+        if processar:
+            novos_codigos = decodificar_frame(frame)
+            for cod in novos_codigos:
+                codigos_encontrados.add(cod)
+
+        for _ in range(frames_para_pular - 1):
+            if not cap.grab():
+                break
+
+    cap.release()
+
+    tempo_fim = time.time()
+    tempo_processamento = tempo_fim - tempo_inicio
+
+    return {
+        "sucesso": True,
+        "total_encontrados": len(codigos_encontrados),
+        "codigos": list(codigos_encontrados),
+        "tempo_processamento": round(tempo_processamento, 2),
+        "duracao_video": round(duracao_video, 2)
+    }
+
+class ProcessarLocalPayload(BaseModel):
+    filename: str
+
+@app.get("/api/videos-locais")
+async def listar_videos_locais(api_key: str = Security(verificar_api_key)):
+    if not os.path.exists(DIR_VIDEOS_DRONE):
+        os.makedirs(DIR_VIDEOS_DRONE)
+    
+    EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi"}
+    arquivos = []
+    
+    for f in os.listdir(DIR_VIDEOS_DRONE):
+        ext = os.path.splitext(f)[1].lower()
+        if ext in EXTENSOES_PERMITIDAS:
+            full_path = os.path.join(DIR_VIDEOS_DRONE, f)
+            if os.path.isfile(full_path):
+                stat = os.stat(full_path)
+                tamanho_mb = round(stat.st_size / (1024 * 1024), 2)
+                data_mod = time.strftime('%d/%m/%Y %H:%M', time.localtime(stat.st_mtime))
+                arquivos.append({
+                    "nome": f,
+                    "tamanho_mb": tamanho_mb,
+                    "data_modificacao": data_mod
+                })
+    
+    return {
+        "caminho_pasta": DIR_VIDEOS_DRONE,
+        "total": len(arquivos),
+        "arquivos": arquivos
+    }
+
+@app.post("/api/processar-drone-local")
+async def processar_video_drone_local(
+    payload: ProcessarLocalPayload,
+    api_key: str = Security(verificar_api_key)
+):
+    nome_seguro = os.path.basename(payload.filename)
+    caminho_completo = os.path.abspath(os.path.join(DIR_VIDEOS_DRONE, nome_seguro))
+    
+    if not caminho_completo.startswith(os.path.abspath(DIR_VIDEOS_DRONE)):
+        raise HTTPException(status_code=400, detail="Caminho de arquivo inválido.")
+    
+    if not os.path.exists(caminho_completo):
+        raise HTTPException(status_code=404, detail=f"Arquivo '{nome_seguro}' não encontrado na pasta {DIR_VIDEOS_DRONE}.")
+    
+    return processar_video_path(caminho_completo)
+
 @app.post("/api/processar-drone")
 async def processar_video_drone(
     file: UploadFile = File(...),
     api_key: str = Security(verificar_api_key)
 ):
-    tempo_inicio = time.time()
-
-    # 2. Whitelisting de extensões permitidas
     EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi"}
     _, extensao = os.path.splitext(file.filename)
     extensao = extensao.lower()
@@ -149,7 +250,6 @@ async def processar_video_drone(
             detail="Formato de arquivo não permitido. Apenas .mp4, .mov e .avi são aceitos."
         )
 
-    # 2. Limite de tamanho de arquivo (trava de 600MB)
     LIMITE_TAMANHO_BYTES = 600 * 1024 * 1024  # 600MB
     if file.size and file.size > LIMITE_TAMANHO_BYTES:
         raise HTTPException(
@@ -161,16 +261,13 @@ async def processar_video_drone(
     if not os.path.exists(pasta_temp):
         os.makedirs(pasta_temp)
         
-    # 3. Gerenciamento Seguro com UUID para evitar Path Traversal
     temp_filename = os.path.join(pasta_temp, f"temp_{uuid.uuid4()}{extensao}")
     
-    duracao_video = 0.0
     try:
-        # 2. Salva o arquivo em chunks monitorando limite de tamanho em tempo real
         tamanho_acumulado = 0
         with open(temp_filename, "wb") as buffer:
             while True:
-                chunk = await file.read(1024 * 1024)  # Lê blocos de 1MB
+                chunk = await file.read(1024 * 1024)
                 if not chunk:
                     break
                 tamanho_acumulado += len(chunk)
@@ -184,68 +281,15 @@ async def processar_video_drone(
                     )
                 buffer.write(chunk)
 
-        cap = cv2.VideoCapture(temp_filename)
-        fps_video = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
-        duracao_video = total_frames / fps_video if fps_video > 0 else 0.0
-
-        codigos_encontrados = set()
-        # Alterado de 5 fps para 3 fps para acelerar o processamento mantendo a excelente cobertura de detecção
-        frames_para_pular = max(1, int(fps_video / 3))
-        
-        frame_anterior_cinza = None
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # Filtro de movimento de frames simples
-            frame_pequeno = cv2.resize(frame, (256, 256))
-            frame_cinza = cv2.cvtColor(frame_pequeno, cv2.COLOR_BGR2GRAY)
-            
-            processar = True
-            if frame_anterior_cinza is not None:
-                diff = cv2.absdiff(frame_cinza, frame_anterior_cinza)
-                mean_diff = np.mean(diff) / 255.0
-                
-                # Pula frames com movimento irrelevante (menos de 0.5% de variação de pixels)
-                if mean_diff < 0.005:
-                    processar = False
-                    
-            frame_anterior_cinza = frame_cinza
-            
-            if processar:
-                # Decodifica o frame aplicando os filtros
-                novos_codigos = decodificar_frame(frame)
-                for cod in novos_codigos:
-                    codigos_encontrados.add(cod)
-
-            # Otimização: Pula a decodificação de frames intermediários usando cap.grab()
-            for _ in range(frames_para_pular - 1):
-                if not cap.grab():
-                    break
-
-        cap.release()
+        resultado = processar_video_path(temp_filename)
+        return resultado
 
     finally:
-        # 4. Robustez e LGPD (Data Purge garantido via finally)
         try:
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
         except Exception as e:
             print(f"[Limpeza] Erro ao remover arquivo temporário {temp_filename}: {e}")
-
-    tempo_fim = time.time()
-    tempo_processamento = tempo_fim - tempo_inicio
-
-    return {
-        "sucesso": True,
-        "total_encontrados": len(codigos_encontrados),
-        "codigos": list(codigos_encontrados),
-        "tempo_processamento": round(tempo_processamento, 2),
-        "duracao_video": round(duracao_video, 2)
-    }
 
 if __name__ == "__main__":
     import uvicorn
