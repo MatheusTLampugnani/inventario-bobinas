@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const URL_ATUAL_FIXA = "https://invited-columns-semiconductor-modification.trycloudflare.com";
+const URL_ATUAL_FIXA = "https://affiliated-search-demand-measures.trycloudflare.com";
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     // Prioriza a URL_ATUAL_FIXA atualizada pelo script automatizado a cada inicialização
