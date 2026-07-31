@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const URL_ATUAL_FIXA = "https://res-russell-promises-references.trycloudflare.com";
+const URL_ATUAL_FIXA = "https://tail-agree-quick-pics.trycloudflare.com";
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
     // Prioriza a URL_ATUAL_FIXA atualizada pelo script automatizado a cada inicialização
