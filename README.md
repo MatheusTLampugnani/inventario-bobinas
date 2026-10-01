@@ -456,6 +456,13 @@ CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
 | Versão | Melhoria | Impacto |
 |--------|----------|---------|
+| v2.4 | **Base SAP volta a ser salva** | Desde 30/06/2026 a importação enviava colunas inexistentes (`romaneio`, `agrupador`, `rota`) e o banco recusava a planilha inteira em silêncio. Agora grava em lotes, descarta coluna que faltar e avisa o operador se a base não chegou ao servidor. |
+| v2.4 | **Fila offline sem travar** | Sessões nascem com uuid no aparelho (antes `offline-<timestamp>`, recusado pelo banco e travando a fila para sempre). Envio idempotente (upsert por id), retentativa a cada 30 s, leitura com erro de dados isolada sem bloquear as demais, `data_leitura` = hora real da bipagem. |
+| v2.4 | **Conferência sem truncamento** | Consultas paginadas (o Supabase corta em 10.000 linhas), período selecionável, SAP buscado só para os lotes lidos, pendências SAP em segundo plano (lote repetido em várias bases conta só pela importação mais recente, mantendo todas as linhas dela), leituras repetidas não inflam os totais, unidade/setor do colaborador separados da filial da bobina. |
+| v2.4 | **PWA abre sem rede** | Service Worker guarda JS/CSS do build atual e usa rede-primeiro no `index.html` (deploy novo aparece na hora). |
+| v2.4 | **Correções de contagem** | Filial da leitura vem do SAP (antes caía em 1001 para lotes numéricos); CSV via Blob (antes cortava no `#`). Contadores Esperadas/Lidas/Faltam mantêm a regra original (linhas da planilha). |
+| v2.4 | **Backend do drone** | Fila de processamento (`MAX_TAREFAS_SIMULTANEAS`), backlog de frames realmente limitado, CORS restrito, erro 413 correto, limpeza de tarefas antigas. |
+| v2.4 | **Testes** | `npm test`: regras de interpretação/conciliação e motor de sincronização (IndexedDB simulado). |
 | v2.3 | **Offline-First com Dexie.js (IndexedDB)** | Permite que operadores continuem bipando bobinas sem conexão Wi-Fi. Os dados são salvos localmente e sincronizados em lote no background quando a conexão volta. |
 | v2.3 | **Bypass Offline de Validação de Sessão** | `garantirSessao` ignora consultas remotas ao Supabase e confia na sessão local caso a rede caia, eliminando erros no meio de bipagens. |
 | v2.2 | **Pipeline de Decodificação Progressivo (Early Exit)** | Abandona filtros de imagem pesados assim que um código é encontrado no frame; reduz tempo médio por frame de ~150ms para ~20ms em trechos nítidos |
@@ -483,12 +490,12 @@ CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
 | # | Limitação | Severidade | Descrição |
 |---|-----------|-----------|-----------|
 | L-01 | **Monolito frontend** | 🟡 Média | `App.jsx` com ~1700 linhas concentra toda a lógica — dificulta manutenção e testes |
-| L-02 | **CORS permissivo** | 🔴 Alta | Backend aceita `allow_origins=["*"]` — deveria restringir ao domínio de produção |
+| L-02 | ~~CORS permissivo~~ | ✅ v2.4 | Restrito a `CORS_ORIGINS` (padrão: domínio de produção + localhost) |
 | L-03 | **Sem autenticação JWT** | 🟡 Média | Login por crachá sem token — não há expiração de sessão |
-| L-04 | **Sem testes automatizados** | 🟡 Média | Nenhum teste unitário ou de integração |
-| L-05 | **Service Worker básico** | 🟢 Baixa | Cache apenas de assets estáticos, sem sincronização de dados offline |
+| L-04 | **Cobertura de testes parcial** | 🟡 Média | `npm test` cobre regras de negócio e sincronização; interface ainda sem testes |
+| L-05 | ~~Service Worker básico~~ | ✅ v2.4 | App abre offline; leituras ficam no IndexedDB e sincronizam sozinhas |
 | L-06 | **Sem CI/CD formal** | 🟡 Média | Deploy via Render auto-deploy sem pipeline de validação |
-| L-07 | **Chave `service_role` no frontend** | 🔴 Alta | O `.env` utiliza `service_role` indevidamente no frontend |
+| L-07 | **Chave `service_role` no frontend** | 🔴 Crítica | O `.env` usa `service_role` no frontend: o site publica acesso total a todas as tabelas do projeto Supabase (inclusive de outros sistemas). Passo a passo de correção em [`supabase/README.md`](supabase/README.md) |
 | L-08 | **Sem rate limiting** | 🟡 Média | Backend de processamento de drone sem proteção contra abuso |
 
 ### Roadmap Futuro

@@ -54,7 +54,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                         return true;
                     }
                 }
-            } catch (e) {
+            } catch {
                 return false;
             }
             return false;
@@ -145,9 +145,18 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                     }
                 });
 
+                if (res.status === 404) {
+                    // Servidor reiniciou e perdeu a tarefa (as tarefas ficam só em memória)
+                    clearInterval(intervalId);
+                    setProcessando(false);
+                    setStatus('A análise foi interrompida no servidor. Envie o vídeo novamente.');
+                    return;
+                }
                 if (res.ok) {
                     const data = await res.json();
-                    if (data.status === 'processando') {
+                    if (data.status === 'na_fila') {
+                        setStatus('Aguardando na fila: outro vídeo está sendo analisado no servidor...');
+                    } else if (data.status === 'processando') {
                         const pct = data.porcentagem || 0;
                         const total = data.total_encontrados || 0;
                         setStatus(`Analisando vídeo de IA: ${pct}% concluído (${total} lotes encontrados até agora)...`);
@@ -247,7 +256,7 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                         try {
                             const dados = JSON.parse(xhr.responseText);
                             resolve(dados);
-                        } catch (e) {
+                        } catch {
                             reject(new Error("Resposta inválida do servidor."));
                         }
                     } else if (xhr.status === 413) {

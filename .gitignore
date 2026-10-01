@@ -31,3 +31,5 @@ backend/__pycache__/
 backend/*.pyc
 backend/temp_*
 backend/*.onnx
+# Pacotes de deploy: o build leva as variáveis VITE_ (chaves) embutidas
+*.tar.gz

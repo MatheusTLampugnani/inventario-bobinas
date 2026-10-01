@@ -61,7 +61,7 @@ const Scanner = ({ aoLerCodigo, aoCancelar }) => {
               }).catch(console.error);
             }
           },
-          (erro) => { }
+          () => { /* frames sem código são esperados */ }
         );
       } catch (err) {
         console.error("Erro ao ligar a câmera:", err);
