@@ -1,9 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
 import Header from './components/Header'
 import Scanner from './components/Scanner'
 import logoVideplast from './assets/videplast-brand.png'
 import { supabase } from './supabase'
-import FilterControls from './components/FilterControls'
 import ProcessadorDrone from './components/ProcessadorDrone'
 import db from './db'
 import { useSyncManager } from './hooks/useSyncManager'
@@ -43,6 +42,14 @@ const removerZeros = (val) => {
     return limpo === '' ? '0' : limpo;
 };
 
+const obterDataHojeIso = () => {
+  const d = new Date();
+  const ano = d.getFullYear();
+  const mes = String(d.getMonth() + 1).padStart(2, '0');
+  const dia = String(d.getDate()).padStart(2, '0');
+  return `${ano}-${mes}-${dia}`;
+};
+
 function App() {
   // ESTADO DE ATUALIZAÇÃO DO PWA
   const [swRegistration, setSwRegistration] = useState(null);
@@ -73,8 +80,11 @@ function App() {
   const [rotaAtual, setRotaAtual] = useState(''); 
 
   // ESTADOS DO FILTRO E PAGINAÇÃO
-  const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '' });
+  const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '', operador: '' });
   const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
+  const [conferenciaStatusFilter, setConferenciaStatusFilter] = useState('todos');
+  const [conferenciaTab, setConferenciaTab] = useState('inventarios'); // 'inventarios' | 'leituras' | 'faltando'
+  const [bobinasFaltandoSap, setBobinasFaltandoSap] = useState([]);
   const [paginaAtual, setPaginaAtual] = useState(1);
   const ITENS_POR_PAGINA = 50;
 
@@ -280,61 +290,194 @@ function App() {
     return `Depósito: ${bobina.deposito || '-'}`;
   };
 
+  const calcularStatusConciliacao = (b, dadosSap, nomeRota) => {
+    if (!dadosSap) return { status: 'Sobra (Não SAP)', tipo: 'sobrando' };
+    const endereco_lido = b.endereco_lido || '-';
+    const endereco_sap_fmt = formatarEnderecoSAP(dadosSap);
+    if (endereco_lido === '-' || endereco_sap_fmt === '-') return { status: 'OK (Lida)', tipo: 'ok' };
+    if (endereco_lido === endereco_sap_fmt) return { status: 'OK (Lida)', tipo: 'ok' };
+    // Validação cruzada Rota-Gaveta
+    const matchGaveta = endereco_lido.match(/\|\s*P:\s*([^|]+)/);
+    if (matchGaveta && nomeRota && nomeRota !== '-') {
+      const gavetaExtraida = matchGaveta[1].trim();
+      if (`Posição: ${nomeRota}-${gavetaExtraida}` === endereco_sap_fmt) return { status: 'OK (Lida)', tipo: 'ok' };
+    }
+    return { status: 'Local Incorreto', tipo: 'divergencia' };
+  };
+
   const abrirConferenciaAdmin = async () => {
     setShowConferencia(true);
     setPaginaAtual(1);
+    setConferenciaStatusFilter('todos');
+    const hojeIso = obterDataHojeIso();
+
+    if (!isAdmin) {
+      setConferenciaTab('leituras');
+      setConferenciaFilters({ lote: '', data_leitura: hojeIso, filial: '', deposito: '', operador: String(crachaLogado) });
+    } else {
+      setConferenciaTab('inventarios');
+      setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '', operador: '' });
+    }
     setCarregandoAcao(true);
     try {
-      const { data: leituras, error: erroLeituras } = await supabase.from('bobinas_lidas').select('*');
-      const { data: crachas } = await supabase.from('crachas').select('id, nome_completo');
-      const { data: sapBanco } = await supabase.from('bobinas_sap').select('*');
+      const { data: leituras, error: erroLeituras } = await supabase.from('bobinas_lidas').select('*').limit(20000);
+      const { data: crachasList } = await supabase.from('crachas').select('id, nome_completo, admin');
+      const { data: sapBanco } = await supabase.from('bobinas_sap').select('*').limit(20000);
 
       if (erroLeituras) throw erroLeituras;
 
-      if (leituras) {
-        const listaGlobal = leituras.map(b => {
-          const dono = crachas?.find(c => c.id === b.cracha_leitura);
-          const dadosSap = sapBanco?.find(s => {
-            if (b.romaneio && b.romaneio !== '-') {
-              return s.romaneio === b.romaneio;
-            }
-            return s.lote === b.lote;
-          }) || csvBobinas.find(c => {
-            if (b.romaneio && b.romaneio !== '-') {
-              return c.romaneio === b.romaneio;
-            }
-            return c.codigo === b.lote;
-          });
-          const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
-          let dataFormatada = '-';
-          if (dataOriginal) {
-            const d = new Date(dataOriginal);
-            if (!isNaN(d.getTime())) {
-              dataFormatada = `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR')}`;
-            } else {
-              dataFormatada = dataOriginal;
-            }
-          }
-          const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
+      const todasSap = (sapBanco && sapBanco.length > 0) ? sapBanco : (csvBobinas || []).map(c => ({
+        lote: c.lote || c.codigo,
+        romaneio: c.romaneio,
+        material: c.material,
+        descricao: c.descricao,
+        peso_liquido: c.peso_liquido,
+        largura: c.largura,
+        espessura: c.espessura,
+        ordem_producao: c.ordem_producao,
+        ordem_venda: c.ordem_venda,
+        cliente: c.cliente,
+        nome_cliente: c.nome_cliente,
+        deposito: c.deposito,
+        gondola: c.gondola,
+        posicao: c.posicao,
+        filial: c.filial,
+        agrupador: c.agrupador
+      }));
+      const lidas = leituras || [];
+      const listaGlobal = [];
+      const listaFaltando = [];
 
-          const nomeRota = rotasDisponiveis.find(r => String(r.id) === String(b.rotas))?.rota || b.rotas || '-';
+      // Mapeia crachás para obter nome rapidamente
+      const crachaMap = new Map();
+      crachasList?.forEach(c => crachaMap.set(String(c.id), c));
 
-          return {
-            codigo: b.lote, dataHora: dataFormatada, cracha: b.cracha_leitura, nome: dono ? dono.nome_completo : b.cracha_leitura,
-            lote: b.lote, romaneio: b.romaneio,
-            filial: filialFinal, deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
-            endereco_lido: b.endereco_lido || '-', endereco_sap: formatarEnderecoSAP(dadosSap),
-            agrupador: dadosSap ? (dadosSap.agrupador || '-') : '-', material: dadosSap ? (dadosSap.material || '-') : '-',
-            descricao: dadosSap ? (dadosSap.descricao || '-') : '-', peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
-            largura: dadosSap ? (dadosSap.largura || '-') : '-', espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
-            ordem_producao: dadosSap ? (dadosSap.ordem_producao || '-') : '-', ordem_venda: dadosSap ? (dadosSap.ordem_venda || '-') : '-',
-            cliente: dadosSap ? (dadosSap.cliente || '-') : '-', nome_cliente: dadosSap ? (dadosSap.nome_cliente || '-') : '-',
-            rota: nomeRota
-          };
+      // 1. Processar todas as leituras realizadas pelos colaboradores
+      const codigosBipados = new Set();
+      lidas.forEach(b => {
+        const cId = String(b.cracha_leitura || '');
+        const dono = crachaMap.get(cId);
+        const nomeDono = dono ? dono.nome_completo : (cId ? `Crachá ${cId}` : 'Não identificado');
+
+        const bLoteLimpo = limparCodigo(b.lote);
+        const bRomaneioLimpo = limparCodigo(b.romaneio);
+
+        const dadosSap = todasSap.find(s => {
+          if (bRomaneioLimpo && s.romaneio && limparCodigo(s.romaneio) === bRomaneioLimpo) return true;
+          if (bLoteLimpo && s.lote && limparCodigo(s.lote).toUpperCase() === bLoteLimpo.toUpperCase()) return true;
+          return false;
+        }) || (csvBobinas || []).find(c => {
+          if (bRomaneioLimpo && c.romaneio && limparCodigo(c.romaneio) === bRomaneioLimpo) return true;
+          if (bLoteLimpo && c.codigo && limparCodigo(c.codigo).toUpperCase() === bLoteLimpo.toUpperCase()) return true;
+          return false;
         });
-        setLeiturasGlobais(listaGlobal);
-      }
-    } catch (err) { console.error(err); } finally { setCarregandoAcao(false); }
+
+        const dataOriginal = b.data_leitura || b.created_at || b.data_hora || b.data_registro;
+        let dataFormatada = '-';
+        let dataIsoDia = '';
+        let dataDiaFmt = '-';
+        let horaFormatada = '-';
+        let timestampNum = 0;
+
+        if (dataOriginal) {
+          const d = new Date(dataOriginal);
+          if (!isNaN(d.getTime())) {
+            timestampNum = d.getTime();
+            const ano = d.getFullYear();
+            const mes = String(d.getMonth() + 1).padStart(2, '0');
+            const dia = String(d.getDate()).padStart(2, '0');
+            dataIsoDia = `${ano}-${mes}-${dia}`;
+            dataDiaFmt = `${dia}/${mes}/${ano}`;
+            horaFormatada = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            dataFormatada = `${dataDiaFmt} ${d.toLocaleTimeString('pt-BR')}`;
+          } else {
+            dataFormatada = String(dataOriginal);
+          }
+        }
+
+        const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
+        const nomeRota = rotasDisponiveis.find(r => String(r.id) === String(b.rotas))?.rota || b.rotas || '-';
+        const { status, tipo } = calcularStatusConciliacao(b, dadosSap, nomeRota);
+
+        const chave = bRomaneioLimpo ? `rom_${bRomaneioLimpo}` : `lote_${bLoteLimpo}`;
+        codigosBipados.add(chave);
+
+        listaGlobal.push({
+          codigo: b.lote || b.romaneio,
+          dataHora: dataFormatada,
+          dataIso: dataIsoDia,
+          dataDiaFmt: dataDiaFmt,
+          horaFmt: horaFormatada,
+          timestamp: timestampNum,
+          sessao_id: b.sessao_id,
+          cracha: b.cracha_leitura,
+          nome: nomeDono,
+          lote: b.lote,
+          romaneio: b.romaneio,
+          filial: filialFinal,
+          deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
+          endereco_lido: b.endereco_lido || '-',
+          endereco_sap: formatarEnderecoSAP(dadosSap),
+          agrupador: dadosSap ? (dadosSap.agrupador || '-') : '-',
+          material: dadosSap ? (dadosSap.material || '-') : '-',
+          descricao: dadosSap ? (dadosSap.descricao || '-') : '-',
+          peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
+          largura: dadosSap ? (dadosSap.largura || '-') : '-',
+          espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
+          ordem_producao: dadosSap ? (dadosSap.ordem_producao || '-') : '-',
+          ordem_venda: dadosSap ? (dadosSap.ordem_venda || '-') : '-',
+          cliente: dadosSap ? (dadosSap.cliente || '-') : '-',
+          nome_cliente: dadosSap ? (dadosSap.nome_cliente || '-') : '-',
+          rota: nomeRota,
+          status,
+          tipo
+        });
+      });
+
+      // 2. Mapear bobinas do SAP que NÃO foram bipadas em uma lista dedicada
+      todasSap.forEach(s => {
+        const sRomaneioLimpo = limparCodigo(s.romaneio);
+        const sLoteLimpo = limparCodigo(s.lote);
+        const chave = sRomaneioLimpo ? `rom_${sRomaneioLimpo}` : `lote_${sLoteLimpo}`;
+        if (!codigosBipados.has(chave)) {
+          const filialFinal = s.filial || determinarFilial(s.lote) || '-';
+          listaFaltando.push({
+            codigo: s.lote || s.romaneio,
+            dataHora: '-',
+            dataIso: '',
+            dataDiaFmt: '-',
+            cracha: '-',
+            nome: '-',
+            lote: s.lote,
+            romaneio: s.romaneio,
+            filial: filialFinal,
+            deposito: s.deposito || '-',
+            endereco_lido: '-',
+            endereco_sap: formatarEnderecoSAP(s),
+            agrupador: s.agrupador || '-',
+            material: s.material || '-',
+            descricao: s.descricao || '-',
+            peso_liquido: s.peso_liquido || '-',
+            largura: s.largura || '-',
+            espessura: s.espessura || '-',
+            ordem_producao: s.ordem_producao || '-',
+            ordem_venda: s.ordem_venda || '-',
+            cliente: s.cliente || '-',
+            nome_cliente: s.nome_cliente || '-',
+            rota: '-',
+            status: 'Faltando (Não Bipada)',
+            tipo: 'faltando'
+          });
+        }
+      });
+
+      setLeiturasGlobais(listaGlobal);
+      setBobinasFaltandoSap(listaFaltando);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setCarregandoAcao(false);
+    }
   };
 
   const finalizarImportacao = async (linhas, idxCabecalho, separator, headersLimpos, modoEscolhido) => {
@@ -567,47 +710,64 @@ function App() {
       linha = linha.trim().toUpperCase();
       if (!linha) continue;
 
-      // Se a contagem ativa for LOTE:
+      // 1. Tag GS1 / Videplast com parênteses: (7)<lote/romaneio>
+      // Ex real: E(0)301184(1)HEINZ BRAS(2)...(7)5001823781(8)1005...
+      if (linha.includes('(7)')) {
+        const regex7 = /\(7\)\s*([A-Z0-9]+)/i;
+        const match7 = regex7.exec(linha);
+        if (match7) {
+          const valor = removerZeros(match7[1].trim());
+          if (valor && valor.length >= 4 && valor.length <= 16) {
+            itensExtraidos.push({ tipo: tipoContagem === 'ROMANEIO' ? 'romaneio' : 'lote', valor });
+            continue;
+          }
+        }
+      }
+
+      // 2. Formato Compacto 2D / Barcode reduzido: R<lote/romaneio>C<produto>...
+      // Ex real: R5001823781C9056435UMILQ2.700
+      const matchCompacto = linha.match(/^R([A-Z0-9]{6,16})C/i);
+      if (matchCompacto) {
+        const valor = removerZeros(matchCompacto[1].trim());
+        if (valor) {
+          itensExtraidos.push({ tipo: tipoContagem === 'ROMANEIO' ? 'romaneio' : 'lote', valor });
+          continue;
+        }
+      }
+
+      // 3. Se a contagem ativa for LOTE:
       if (tipoContagem === 'LOTE') {
-        // 1. Se a linha contiver a tag de lotes VL\d+LT (canto inferior direito)
+        // 3.1. Tag de lotes VL\d+LT (canto inferior térmico)
         const matchVL = linha.match(/VL\d+LT/i);
         if (matchVL) {
           const indexFimTag = matchVL.index + matchVL[0].length;
           const restante = linha.substring(indexFimTag);
           
-          // Quebra os lotes pelo espaço ou outros delimitadores comuns
           const partesInternas = restante.split(/[\s;]+/);
           partesInternas.forEach(p => {
             let palavraLote = p.trim();
             if (!palavraLote) return;
 
-            // Se a palavra contiver a palavra 'KG' (ex: VA13131815KG126,84), pega apenas o que vem antes de 'KG'
             if (/KG/i.test(palavraLote)) {
               const partesKG = palavraLote.split(/KG/i);
               palavraLote = partesKG[0].trim();
             }
 
             const limpo = removerZeros(palavraLote);
-            // Lote físico sempre começa com letra e tem comprimento de lote típico (6 a 12 caracteres)
-            if (limpo && /^[A-Z]/i.test(limpo.charAt(0)) && limpo.length >= 6 && limpo.length <= 12) {
+            if (limpo && limpo.length >= 6 && limpo.length <= 16) {
               itensExtraidos.push({ tipo: 'lote', valor: limpo });
             }
           });
           continue;
         }
 
-        // 2. Se a linha NÃO contiver a tag VL\d+LT
+        // 3.2. Termo individual ou isolado (leitor 1D, bipagem direta ou digitação)
         const palavras = linha.split(/[\s,;\-\/]+/).filter(Boolean);
         
-        // Se tiver múltiplos termos sem a tag VL\d+LT (ex: cabeçalho MA1003OP500895600), ignoramos inteiramente
-        if (palavras.length > 1) {
-          continue;
-        }
-
         if (palavras.length === 1) {
           const termoUnico = palavras[0];
-          // Descarta se contiver OP (Ordem de Produção) ou se for muito longo para ser lote (ex: cabeçalhos colados)
-          if (termoUnico.includes('OP') || termoUnico.length > 12) {
+          // Descarta se contiver OP ou for cabeçalho gigante
+          if (termoUnico.includes('OP') || termoUnico.length > 16) {
             continue;
           }
 
@@ -617,7 +777,7 @@ function App() {
           const isPrefixoAG = termoUnico.startsWith('AG');
           const agNumeroLimpo = isPrefixoAG ? removerZeros(termoUnico.substring(2)) : valorLimpo;
 
-          // Se for um identificador de agrupador e o SAP estiver carregado, expande seus lotes
+          // Se for agrupador e o SAP estiver carregado, expande seus lotes
           const itemSAPAgr = csvBobinas.find(c => removerZeros(c.agrupador) === agNumeroLimpo);
 
           if (itemSAPAgr) {
@@ -628,42 +788,25 @@ function App() {
               }
             });
           } else {
-            // Se não estiver no SAP ou for Sobra, aceita apenas se começar com LETRA e não for o termo com prefixo AG puro
-            const comecaComLetra = /^[A-Z]/i.test(valorLimpo.charAt(0));
-            if (comecaComLetra && !isPrefixoAG) {
+            // Lote físico válido (alfanumérico com letras ou puramente numérico, ex: 5001828190)
+            if (!isPrefixoAG && /^[A-Z0-9]{6,16}$/i.test(valorLimpo)) {
               itensExtraidos.push({ tipo: 'lote', valor: valorLimpo });
             }
           }
         }
       }
 
-      // Se a contagem ativa for ROMANEIO:
+      // 4. Se a contagem ativa for ROMANEIO:
       if (tipoContagem === 'ROMANEIO') {
-        // Se contiver a tag de lotes VL\d+LT (o agrupador do canto inferior), ignoramos por completo no Romaneio
         if (/VL\d+LT/i.test(linha)) {
           continue;
         }
 
-        // 1. Se contiver a tag (7) e (8) ou apenas a tag (7) com dígitos subsequentes
-        if (linha.includes('(7)')) {
-          const regexRom = /\(7\)(\d+)/i;
-          const matchRom = regexRom.exec(linha);
-          if (matchRom) {
-            const valorRom = matchRom[1].trim();
-            const limpo = removerZeros(valorRom);
-            if (limpo && /^\d+$/.test(limpo)) {
-              itensExtraidos.push({ tipo: 'romaneio', valor: limpo });
-            }
-          }
-          continue;
-        }
-
-        // 2. Se for um termo único inteiramente numérico (ex: romaneio digitado diretamente ou bipado)
         const palavras = linha.split(/[\s,;\-\/]+/).filter(Boolean);
         if (palavras.length === 1) {
           const termoUnico = palavras[0];
           const valorLimpo = removerZeros(termoUnico);
-          if (valorLimpo && /^\d+$/.test(valorLimpo) && valorLimpo.length >= 6 && valorLimpo.length <= 12) {
+          if (valorLimpo && /^\d+$/.test(valorLimpo) && valorLimpo.length >= 6 && valorLimpo.length <= 16) {
             itensExtraidos.push({ tipo: 'romaneio', valor: valorLimpo });
           }
         }
@@ -829,7 +972,7 @@ function App() {
 
   const processarLoteDrone = async (arrayDeTextosLidos) => {
     setUsandoDrone(false);
-    if (arrayDeTextosLidos.length === 0) { abrirAlerta('Resultado', 'Nenhum código lido.'); return; }
+    if (!arrayDeTextosLidos || arrayDeTextosLidos.length === 0) { abrirAlerta('Resultado', 'Nenhum código lido.'); return; }
 
     setCarregandoAcao(true);
     let lotesFormatados = [];
@@ -866,7 +1009,7 @@ function App() {
       if (modoInventario === 'COM_ENDERECO') {
         const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
         if (depInfo && depInfo.requerEndereco) {
-          enderecoAInserir = `Depósito: ${depositoAtual} | G: ${gondolaAtual} | P: ${gavetaAtual}`;
+          enderecoAInserir = `Depósito: ${depositoAtual}${gondolaAtual.trim() ? ` | G: ${gondolaAtual}` : ''} | P: ${gavetaAtual}`;
         } else {
           enderecoAInserir = `Depósito: ${depositoAtual}`;
         }
@@ -877,16 +1020,16 @@ function App() {
         
         const bobinaSAP = csvBobinas.find(c => {
           if (tipoContagem === 'ROMANEIO') {
-            return c.romaneio === lote;
+            return limparCodigo(c.romaneio) === lote;
           } else {
-            return c.codigo === lote;
+            return limparCodigo(c.codigo) === lote;
           }
         });
         const identificadorFinal = bobinaSAP ? bobinaSAP.codigo : lote;
 
         if (listaAtualizada.some(b => b.codigo === identificadorFinal)) continue;
         
-        const filialMapeada = determinarFilial(identificadorFinal) || (bobinaSAP ? bobinaSAP.filial : null);
+        const filialMapeada = (bobinaSAP ? bobinaSAP.filial : null) || determinarFilial(identificadorFinal);
         const depositoAInserir = modoInventario === 'COM_ENDERECO' ? depositoAtual : (bobinaSAP ? bobinaSAP.deposito : null);
 
         listaAtualizada = [{
@@ -915,7 +1058,7 @@ function App() {
         syncNow();
       }
       setBobinasLidas(listaAtualizada);
-      abrirAlerta('Missão do Drone Concluída!', `Processados e inseridos ${insercoesNoBanco.length} novos itens.`);
+      abrirAlerta('Missão do Drone Concluída!', `Processados e inseridos ${insercoesNoBanco.length} novos itens no inventário.`);
     } catch (erro) { abrirAlerta('Erro', 'Ocorreu um problema ao salvar os dados do drone.'); } finally { setCarregandoAcao(false); }
   };
 
@@ -1075,27 +1218,207 @@ function App() {
   const qtdLidas = bobinasLidas.length; const qtdEsperadas = csvBobinas.length;
   const qtdFaltam = Math.max(0, qtdEsperadas - bobinasLidas.filter(b => csvBobinas.some(c => c.codigo === b.codigo)).length);
 
-  const leiturasProcessadas = leiturasGlobais.filter(l => {
-    if (conferenciaFilters.lote && !l.codigo.includes(conferenciaFilters.lote) && (!l.romaneio || !l.romaneio.includes(conferenciaFilters.lote))) return false;
-    if (conferenciaFilters.filial && l.filial !== conferenciaFilters.filial) return false;
-    if (conferenciaFilters.deposito && l.deposito !== conferenciaFilters.deposito) return false;
-    return true;
-  }).sort((a, b) => {
+  // LISTA DE DATAS ÚNICAS DOS INVENTÁRIOS (ORDENADAS DA MAIS RECENTE PARA A MAIS ANTIGA)
+  const listaDatasInventarios = useMemo(() => {
+    const mapaDatas = new Map();
+    leiturasGlobais.forEach(l => {
+      if (l.dataIso && !mapaDatas.has(l.dataIso)) {
+        mapaDatas.set(l.dataIso, { dataIso: l.dataIso, dataFmt: l.dataDiaFmt, timestamp: l.timestamp });
+      }
+    });
+    return Array.from(mapaDatas.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }, [leiturasGlobais]);
+
+  // LISTA DE OPERADORES ÚNICOS NAS LEITURAS
+  const listaOperadores = useMemo(() => {
+    const map = new Map();
+    leiturasGlobais.forEach(l => {
+      const crachaStr = String(l.cracha || '');
+      if (crachaStr && crachaStr !== '-' && !map.has(crachaStr)) {
+        map.set(crachaStr, { cracha: crachaStr, nome: l.nome });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.nome.localeCompare(b.nome));
+  }, [leiturasGlobais]);
+
+  // RESUMO DE INVENTÁRIOS REALIZADOS (CADA INVENTÁRIO É DEFINIDO POR DATA + COLABORADOR COM SUA PRÓPRIA KPI)
+  const resumoInventarios = useMemo(() => {
+    const mapa = {};
+    leiturasGlobais.forEach(l => {
+      const dataIso = l.dataIso || 'sem_data';
+      const cracha = String(l.cracha || 'sem_cracha');
+      const chave = `${dataIso}___${cracha}`;
+
+      if (!mapa[chave]) {
+        mapa[chave] = {
+          id: chave,
+          dataIso: dataIso,
+          dataFmt: l.dataDiaFmt || '-',
+          cracha: l.cracha,
+          nome: l.nome,
+          total: 0,
+          ok: 0,
+          sobrando: 0,
+          divergencia: 0,
+          depositos: new Set(),
+          primeiroTimestamp: l.timestamp || 0,
+          ultimoTimestamp: l.timestamp || 0,
+          primeiraHora: l.horaFmt || '-',
+          ultimaHora: l.horaFmt || '-'
+        };
+      }
+
+      const inv = mapa[chave];
+      inv.total++;
+      if (l.tipo === 'ok') inv.ok++;
+      else if (l.tipo === 'sobrando') inv.sobrando++;
+      else if (l.tipo === 'divergencia') inv.divergencia++;
+      if (l.deposito && l.deposito !== '-') inv.depositos.add(l.deposito);
+
+      if (l.timestamp && (!inv.primeiroTimestamp || l.timestamp < inv.primeiroTimestamp)) {
+        inv.primeiroTimestamp = l.timestamp;
+        inv.primeiraHora = l.horaFmt;
+      }
+      if (l.timestamp && (!inv.ultimoTimestamp || l.timestamp > inv.ultimoTimestamp)) {
+        inv.ultimoTimestamp = l.timestamp;
+        inv.ultimaHora = l.horaFmt;
+      }
+    });
+
+    return Object.values(mapa).sort((a, b) => b.ultimoTimestamp - a.ultimoTimestamp);
+  }, [leiturasGlobais]);
+
+  // INVENTÁRIOS FILTRADOS POR OPERADOR, DATA OU DEPÓSITO
+  const inventariosFiltrados = useMemo(() => {
+    return resumoInventarios.filter(inv => {
+      if (conferenciaFilters.operador && String(inv.cracha) !== String(conferenciaFilters.operador)) return false;
+      if (conferenciaFilters.data_leitura && inv.dataIso !== conferenciaFilters.data_leitura) return false;
+      if (conferenciaFilters.deposito && !inv.depositos.has(conferenciaFilters.deposito)) return false;
+      return true;
+    });
+  }, [resumoInventarios, conferenciaFilters]);
+
+  // FILTRA ITENS CONTADOS NO CONTEXTO ATIVO (OPERADOR, DATA DO INVENTÁRIO, DEPÓSITO, FILIAL, BUSCA)
+  // Sem filtrar por status, para que os cartões de KPI mostrem o resumo exato daquele inventário/contexto
+  const itensNoContexto = useMemo(() => {
+    return leiturasGlobais.filter(l => {
+      if (conferenciaFilters.operador && String(l.cracha) !== String(conferenciaFilters.operador)) return false;
+      if (conferenciaFilters.data_leitura && l.dataIso !== conferenciaFilters.data_leitura) return false;
+      if (conferenciaFilters.deposito && l.deposito !== conferenciaFilters.deposito) return false;
+      if (conferenciaFilters.filial && l.filial !== conferenciaFilters.filial) return false;
+      const termoBusca = conferenciaFilters.lote.trim().toLowerCase();
+      if (termoBusca) {
+        const cod = String(l.codigo || '').toLowerCase();
+        const rom = String(l.romaneio || '').toLowerCase();
+        const desc = String(l.descricao || '').toLowerCase();
+        const mat = String(l.material || '').toLowerCase();
+        if (!cod.includes(termoBusca) && !rom.includes(termoBusca) && !desc.includes(termoBusca) && !mat.includes(termoBusca)) return false;
+      }
+      return true;
+    });
+  }, [leiturasGlobais, conferenciaFilters]);
+
+  // BOBINAS PENDENTES NO SAP NO CONTEXTO (DEPÓSITO, FILIAL, BUSCA)
+  const faltandoNoContexto = useMemo(() => {
+    return bobinasFaltandoSap.filter(f => {
+      if (conferenciaFilters.deposito && f.deposito !== conferenciaFilters.deposito) return false;
+      if (conferenciaFilters.filial && f.filial !== conferenciaFilters.filial) return false;
+      const termoBusca = conferenciaFilters.lote.trim().toLowerCase();
+      if (termoBusca) {
+        const cod = String(f.codigo || '').toLowerCase();
+        const rom = String(f.romaneio || '').toLowerCase();
+        const desc = String(f.descricao || '').toLowerCase();
+        const mat = String(f.material || '').toLowerCase();
+        if (!cod.includes(termoBusca) && !rom.includes(termoBusca) && !desc.includes(termoBusca) && !mat.includes(termoBusca)) return false;
+      }
+      return true;
+    });
+  }, [bobinasFaltandoSap, conferenciaFilters]);
+
+  // KPIS DINÂMICOS: CALCULADOS COM BASE NO INVENTÁRIO/CONTEXTO ATIVO (COLABORADOR / DATA / DEPÓSITO)
+  const kpiConferencia = useMemo(() => ({
+    total: itensNoContexto.length,
+    ok: itensNoContexto.filter(l => l.tipo === 'ok').length,
+    sobrando: itensNoContexto.filter(l => l.tipo === 'sobrando').length,
+    divergencia: itensNoContexto.filter(l => l.tipo === 'divergencia').length,
+    faltando: faltandoNoContexto.length,
+  }), [itensNoContexto, faltandoNoContexto]);
+
+  // LEITURAS PROCESSADAS (COM FILTRO DE STATUS SELECIONADO E ORDENAÇÃO)
+  const leiturasProcessadas = useMemo(() => {
+    const filtradas = itensNoContexto.filter(l => {
+      if (conferenciaStatusFilter !== 'todos' && l.tipo !== conferenciaStatusFilter) return false;
+      return true;
+    });
+
     const parseData = (str) => {
       if (!str || str === '-') return 0;
       const match = str.match(/(\d{2})\/(\d{2})\/(\d{4})[,\s]*(\d{2}):(\d{2}):(\d{2})/);
       if (match) return new Date(`${match[3]}-${match[2]}-${match[1]}T${match[4]}:${match[5]}:${match[6]}`).getTime();
       return 0;
     };
-    if (conferenciaSort.field === 'Data') {
-       return conferenciaSort.order === 'asc' ? parseData(a.dataHora) - parseData(b.dataHora) : parseData(b.dataHora) - parseData(a.dataHora);
-    }
-    return 0;
-  });
 
-  const totalPaginas = Math.ceil(leiturasProcessadas.length / ITENS_POR_PAGINA) || 1;
+    return filtradas.sort((a, b) => {
+      if (conferenciaSort.field === 'Lote') {
+        const cmp = String(a.codigo || '').localeCompare(String(b.codigo || ''));
+        return conferenciaSort.order === 'asc' ? cmp : -cmp;
+      }
+      if (conferenciaSort.field === 'Data') {
+        return conferenciaSort.order === 'asc' ? parseData(a.dataHora) - parseData(b.dataHora) : parseData(b.dataHora) - parseData(a.dataHora);
+      }
+      return 0;
+    });
+  }, [itensNoContexto, conferenciaStatusFilter, conferenciaSort]);
+
+  // PAGINAÇÃO DINÂMICA
+  const totalItensAba = conferenciaTab === 'faltando'
+    ? faltandoNoContexto.length
+    : (conferenciaTab === 'inventarios' ? inventariosFiltrados.length : leiturasProcessadas.length);
+  const totalPaginas = Math.ceil(totalItensAba / ITENS_POR_PAGINA) || 1;
   const paginaCorrigida = Math.min(paginaAtual, totalPaginas);
   const leiturasPaginadas = leiturasProcessadas.slice((paginaCorrigida - 1) * ITENS_POR_PAGINA, paginaCorrigida * ITENS_POR_PAGINA);
+  const faltandoPaginadas = faltandoNoContexto.slice((paginaCorrigida - 1) * ITENS_POR_PAGINA, paginaCorrigida * ITENS_POR_PAGINA);
+  const inventariosPaginados = inventariosFiltrados.slice((paginaCorrigida - 1) * ITENS_POR_PAGINA, paginaCorrigida * ITENS_POR_PAGINA);
+
+  // EXPORTAR CONFERÊNCIA EM CSV CONFORME A ABA ATIVA
+  const exportarConferencia = () => {
+    const limpar = (val) => { if (!val || val === '-') return '-'; const s = String(val); return s.includes(';') || s.includes(',') ? `"${s}"` : s; };
+
+    if (conferenciaTab === 'inventarios') {
+      if (inventariosFiltrados.length === 0) { abrirAlerta('Vazio', 'Sem dados de inventários para exportar.'); return; }
+      const cabecalho = 'Data do Inventario;Horario;Colaborador;Cracha;Total Contado;OK (No SAP);Sobra (Nao SAP);Local Incorreto;Acuracia;Depositos';
+      const linhas = inventariosFiltrados.map(c => {
+        const taxa = c.total > 0 ? ((c.ok / c.total) * 100).toFixed(1) + '%' : '0%';
+        const horario = `${c.primeiraHora} as ${c.ultimaHora}`;
+        return `${limpar(c.dataFmt)};${limpar(horario)};${limpar(c.nome)};${limpar(c.cracha)};${c.total};${c.ok};${c.sobrando};${c.divergencia};${taxa};${limpar(Array.from(c.depositos).join(', '))}`;
+      });
+      const blob = new Blob(['\uFEFF' + cabecalho + '\n' + linhas.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `resumo_inventarios_${new Date().getTime()}.csv`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      return;
+    }
+
+    if (conferenciaTab === 'faltando') {
+      if (faltandoNoContexto.length === 0) { abrirAlerta('Vazio', 'Sem bobinas pendentes para exportar.'); return; }
+      const cabecalho = 'Lote;Romaneio;Material;Descricao;Filial;Deposito;Endereco SAP;Peso Liquido;Status';
+      const linhas = faltandoNoContexto.map(e => `${limpar(e.lote)};${limpar(e.romaneio)};${limpar(e.material)};${limpar(e.descricao)};${limpar(e.filial)};${limpar(e.deposito)};${limpar(e.endereco_sap)};${limpar(e.peso_liquido)};${limpar(e.status)}`);
+      const blob = new Blob(['\uFEFF' + cabecalho + '\n' + linhas.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `bobinas_pendentes_sap_${new Date().getTime()}.csv`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      return;
+    }
+
+    // Default: aba leituras
+    if (leiturasProcessadas.length === 0) { abrirAlerta('Vazio', 'Sem dados para exportar.'); return; }
+    const cabecalho = 'Lote;Romaneio;Material;Descricao;Filial;Deposito;Endereco Lido;Endereco SAP;Peso Liquido;Status;Rota;Data Leitura;Operador;Cracha';
+    const linhas = leiturasProcessadas.map(e => `${limpar(e.lote)};${limpar(e.romaneio)};${limpar(e.material)};${limpar(e.descricao)};${limpar(e.filial)};${limpar(e.deposito)};${limpar(e.endereco_lido)};${limpar(e.endereco_sap)};${limpar(e.peso_liquido)};${limpar(e.status)};${limpar(e.rota)};${limpar(e.dataHora)};${limpar(e.nome)};${limpar(e.cracha)}`);
+    const blob = new Blob(['\uFEFF' + cabecalho + '\n' + linhas.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `conferencia_leituras_${new Date().getTime()}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
 
   // IDENTIFICA A ROTA ATUAL PARA EXIBIÇÃO NO CABEÇALHO DE LEITURA ATIVA
   const nomeRotaAtiva = rotasDisponiveis.find(r => String(r.id) === String(rotaAtual))?.rota;
@@ -1241,159 +1564,589 @@ function App() {
 
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
-          <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
-            <div className="modal-content shadow border-0">
-              <div className="modal-header border-0 bg-dark text-white"><h5 className="modal-title fw-bold fs-6">Conferência de Leituras</h5><button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button></div>
-              <div className="modal-body p-4 fs-6 text-secondary">
-                <p className="mb-2 text-center">Operador: <strong className="text-danger">{crachaLogado}</strong><br /><span className="small text-muted">{leiturasProcessadas.length} resultados.</span></p>
-                <FilterControls filters={conferenciaFilters} onFilterChange={setConferenciaFilters} onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '' })} sortConfig={conferenciaSort} onSortChange={setConferenciaSort} itemsCount={leiturasProcessadas.length} />
-                <div className="row g-2 mb-3 mt-1">
-                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Filial</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.filial} onChange={e => setConferenciaFilters(prev => ({ ...prev, filial: e.target.value }))}><option value="">Todas as Filiais</option><option value="1001">1001 (VA - VIDEIRA)</option><option value="1003">1003 (MA - MANAUS)</option><option value="1005">1005 (RA - RIO VERDE)</option><option value="1006">1006 (UA - UNIÃO DA VITÓRIA)</option><option value="1007">1007 (TA - 3 RIOS)</option><option value="1009">1009 (ZA - VARZEA GRANDE)</option><option value="1010">1010 (FA - BARRACÃO DO LIMA)</option></select></div>
-                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Depósito</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.deposito} onChange={e => setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }))}><option value="">Todos os Depósitos</option>{depositosDisponiveis.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}</select></div>
+          <div className="modal-dialog modal-dialog-centered modal-xl mx-2 mx-sm-auto" style={{ maxWidth: '1140px' }}>
+            <div className="modal-content shadow border-0" style={{ borderRadius: '14px', overflow: 'hidden' }}>
+              {/* Header */}
+              <div className="modal-header border-0 text-white" style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', padding: '1rem 1.5rem' }}>
+                <div className="d-flex align-items-center gap-3 flex-wrap">
+                  <div className="d-flex align-items-center gap-2">
+                    <i className="bi bi-clipboard2-data-fill text-primary fs-4"></i>
+                    <h5 className="modal-title fw-bold fs-5 text-white mb-0">Painel de Conferência</h5>
+                  </div>
+                  {conferenciaFilters.operador ? (
+                    <span className="badge bg-primary bg-opacity-25 text-info border border-info border-opacity-25 px-3 py-1 rounded-pill" style={{ fontSize: '0.8rem' }}>
+                      <i className="bi bi-person-fill me-1"></i>
+                      {listaOperadores.find(o => String(o.cracha) === String(conferenciaFilters.operador))?.nome || `Crachá ${conferenciaFilters.operador}`}
+                    </span>
+                  ) : (
+                    <span className="badge bg-secondary bg-opacity-25 text-light border border-secondary border-opacity-25 px-3 py-1 rounded-pill" style={{ fontSize: '0.8rem' }}>
+                      <i className="bi bi-calendar3 me-1"></i> Todos os Inventários
+                    </span>
+                  )}
+                  {carregandoAcao && <span className="spinner-border spinner-border-sm text-light" role="status"></span>}
                 </div>
+                <button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button>
+              </div>
 
-                <div className="table-responsive border rounded d-none d-md-block" style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                  <table className="table table-hover text-center align-middle mb-0">
-                    <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}><tr><th className="py-2">Lote / Romaneio</th>{isAdmin && <th className="py-2">Operador</th>}<th className="py-2">Data/Hora</th></tr></thead>
-                    <tbody>
-                      {leiturasPaginadas.length === 0 ? (<tr><td colSpan={isAdmin ? 3 : 2} className="text-muted py-4">Nenhuma leitura.</td></tr>) : (
-                        Object.entries(leiturasPaginadas.reduce((acc, leitura) => {
-                          const dia = leitura.dataHora ? leitura.dataHora.substring(0, 10) : 'Data Desconhecida';
-                          const crachaStr = leitura.cracha || 'Desconhecido';
-                          const key = `${crachaStr}_${dia}`;
-                          if (!acc[key]) acc[key] = { nome: leitura.nome || crachaStr, dia: dia, leituras: [] };
-                          acc[key].leituras.push(leitura);
-                          return acc;
-                        }, {})).map(([key, grupo]) => (
-                          <React.Fragment key={key}>
-                            <tr className="table-secondary" onClick={() => toggleLoteExpandido(`grupo_${key}`)} style={{ cursor: 'pointer' }}>
-                              <td colSpan={isAdmin ? 3 : 2} className="text-start fw-bold text-dark px-4 py-2 border-bottom" style={{ backgroundColor: '#e9ecef' }}>
-                                <i className={`bi bi-chevron-${lotesExpandidos[`grupo_${key}`] ? 'down' : 'right'} me-2 text-primary`}></i>
-                                <i className="bi bi-person-badge me-2 text-primary"></i>
-                                {grupo.nome} <span className="ms-2 text-muted fw-normal" style={{ fontSize: '0.9em' }}>| <i className="bi bi-calendar3 ms-1 me-1"></i> {grupo.dia}</span> <span className="badge bg-primary rounded-pill ms-2">{grupo.leituras.length} leituras</span>
-                              </td>
-                            </tr>
-                            {lotesExpandidos[`grupo_${key}`] && grupo.leituras.map((leitura, index) => {
-                              const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
-                              return (
-                                <React.Fragment key={index}>
-                                  <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
-                                    <td className="fw-bold text-primary text-start px-4">
-                                      <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
-                                      <span className="vp-mono">{leitura.codigo}</span>
-                                    </td>
-                                    {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
-                                    <td>{leitura.dataHora}</td>
-                                  </tr>
-                                  {expandido && (<tr><td colSpan={isAdmin ? 3 : 2} className="p-0 border-0"><div className="p-3 bg-light text-start border-bottom small text-dark animate__animated animate__fadeIn"><div className="row g-3">
-                                    <div className="col-12 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val fw-semibold text-dark">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val fw-semibold text-dark">{leitura.agrupador || '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Romaneio</span><div className="vp-detail-val fw-semibold text-dark">{leitura.romaneio || '-'}</div></div></div>
-                                    <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{leitura.endereco_lido || '-'}</div></div></div>
-                                    <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val fw-semibold text-dark">{leitura.endereco_sap || '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val fw-semibold text-dark">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div></div>
-                                    <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val fw-semibold text-dark">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div></div>
-                                    <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val fw-semibold text-dark">{leitura.rota || '-'}</div></div></div>
-                                  </div></div></td></tr>)}
-                                </React.Fragment>
-                              );
-                            })}
-                          </React.Fragment>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+              {/* Abas de Navegação */}
+              <div className="px-3 pt-2 bg-light d-flex gap-2 border-bottom flex-wrap" style={{ backgroundColor: '#f1f5f9' }}>
+                <button
+                  className={`btn btn-sm d-flex align-items-center gap-1 rounded-top-2 border-bottom-0 fw-semibold ${conferenciaTab === 'inventarios' ? 'btn-white bg-white text-dark shadow-sm border' : 'btn-ghost text-muted'}`}
+                  style={{ padding: '0.5rem 1rem', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
+                  onClick={() => { setConferenciaTab('inventarios'); setPaginaAtual(1); }}
+                >
+                  <i className="bi bi-calendar-check-fill text-primary"></i> {isAdmin ? 'Inventários Realizados' : 'Meus Inventários'} ({inventariosFiltrados.length})
+                </button>
+                <button
+                  className={`btn btn-sm d-flex align-items-center gap-1 rounded-top-2 border-bottom-0 fw-semibold ${conferenciaTab === 'leituras' ? 'btn-white bg-white text-dark shadow-sm border' : 'btn-ghost text-muted'}`}
+                  style={{ padding: '0.5rem 1rem', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
+                  onClick={() => { setConferenciaTab('leituras'); setPaginaAtual(1); }}
+                >
+                  <i className="bi bi-box-seam-fill text-success"></i> Bobinas Bipadas ({itensNoContexto.length})
+                </button>
+                <button
+                  className={`btn btn-sm d-flex align-items-center gap-1 rounded-top-2 border-bottom-0 fw-semibold ${conferenciaTab === 'faltando' ? 'btn-white bg-white text-dark shadow-sm border' : 'btn-ghost text-muted'}`}
+                  style={{ padding: '0.5rem 1rem', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
+                  onClick={() => { setConferenciaTab('faltando'); setPaginaAtual(1); }}
+                >
+                  <i className="bi bi-exclamation-triangle-fill text-warning"></i> Pendentes SAP ({faltandoNoContexto.length})
+                </button>
+              </div>
 
-                <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
-                  <div className="vp-mobile-cards-list">
-                    {leiturasPaginadas.length === 0 ? (
-                        <div className="text-center text-muted p-4">Nenhuma leitura.</div>
-                    ) : (
-                        Object.entries(leiturasPaginadas.reduce((acc, leitura) => {
-                          const dia = leitura.dataHora ? leitura.dataHora.substring(0, 10) : 'Data Desconhecida';
-                          const crachaStr = leitura.cracha || 'Desconhecido';
-                          const key = `${crachaStr}_${dia}`;
-                          if (!acc[key]) acc[key] = { nome: leitura.nome || crachaStr, dia: dia, leituras: [] };
-                          acc[key].leituras.push(leitura);
-                          return acc;
-                        }, {})).map(([key, grupo]) => (
-                          <div key={key} className="mb-4">
-                            <div className="p-3 rounded mb-3 shadow-sm border bg-white position-relative overflow-hidden" onClick={() => toggleLoteExpandido(`grupo_${key}`)} style={{ cursor: 'pointer', transition: 'all 0.2s ease' }}>
-                              <div className="position-absolute start-0 top-0 bottom-0 bg-primary" style={{ width: '4px' }}></div>
-                              <div className="d-flex align-items-center w-100 ps-2">
-                                <div className="rounded-circle bg-light d-flex align-items-center justify-content-center me-3 border" style={{ width: '42px', height: '42px', flexShrink: 0 }}>
-                                  <i className="bi bi-person-fill text-secondary fs-5"></i>
-                                </div>
-                                <div className="flex-grow-1" style={{ minWidth: 0 }}>
-                                  <div className="fw-bold text-dark text-truncate mb-1" style={{ fontSize: '0.95rem' }}>
-                                    {grupo.nome}
-                                  </div>
-                                  <div className="d-flex align-items-center gap-2 flex-wrap">
-                                    <span className="badge bg-light border text-secondary fw-semibold rounded-pill px-2 py-1 d-flex align-items-center" style={{ fontSize: '0.7rem' }}>
-                                      <i className="bi bi-calendar3 me-1"></i>{grupo.dia}
-                                    </span>
-                                    <span className="badge bg-primary bg-opacity-10 text-primary fw-bold rounded-pill px-2 py-1" style={{ fontSize: '0.7rem' }}>
-                                      {grupo.leituras.length} leitura{grupo.leituras.length !== 1 ? 's' : ''}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="ms-2 text-muted" style={{ flexShrink: 0 }}>
-                                  <i className={`bi bi-chevron-${lotesExpandidos[`grupo_${key}`] ? 'up' : 'down'}`}></i>
-                                </div>
-                              </div>
-                            </div>
-                            {lotesExpandidos[`grupo_${key}`] && grupo.leituras.map((leitura, index) => {
-                              const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
-                              return (
-                                <div key={index} className={`vp-mobile-report-card ok shadow-sm border ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer', padding: '1rem', marginBottom: '0.75rem', borderRadius: '0.75rem', backgroundColor: '#ffffff', position: 'relative' }}>
-                                  <div className="d-flex justify-content-between align-items-center mb-1">
-                                    <div className="d-flex align-items-center">
-                                      <i className="bi bi-box-seam me-2 text-primary"></i> 
-                                      <span className="vp-mono fw-bold text-dark fs-6">{leitura.codigo}</span>
-                                    </div>
-                                    <div className="text-muted small fw-semibold">
-                                      <i className="bi bi-clock me-1"></i>{leitura.dataHora.includes(' ') ? leitura.dataHora.split(' ')[1] : leitura.dataHora}
-                                    </div>
-                                  </div>
-                                  {!expandido && (
-                                    <div className="text-center mt-2 text-primary" style={{ fontSize: '0.75rem', opacity: 0.8 }}>
-                                      <i className="bi bi-chevron-down me-1"></i>Ver detalhes
-                                    </div>
-                                  )}
-                                  {expandido && (
-                                    <div className="vp-mobile-card-extra border-top pt-3 mt-3 animate__animated animate__fadeIn">
-                                      <div className="mb-3">
-                                        <div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Material & Descrição</div>
-                                        <div className="fw-semibold text-dark small">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div>
-                                      </div>
-                                      <div className="row g-3">
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Agrupador</div><div className="fw-semibold text-dark small">{leitura.agrupador || '-'}</div></div>
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Romaneio</div><div className="fw-semibold text-dark small">{leitura.romaneio || '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Endereço Lido</div><div className="fw-bold text-primary small bg-primary bg-opacity-10 px-2 py-1 rounded d-inline-block">{leitura.endereco_lido || '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Endereço SAP</div><div className="fw-semibold text-dark small">{leitura.endereco_sap || '-'}</div></div>
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Peso Líquido</div><div className="fw-semibold text-dark small">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div>
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Dimensões</div><div className="fw-semibold text-dark small">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Ordem Prod/Venda</div><div className="fw-semibold text-dark small">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Cliente</div><div className="fw-semibold text-dark small">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Rota</div><div className="fw-semibold text-dark small">{leitura.rota || '-'}</div></div>
-                                      </div>
-                                      <div className="text-center mt-3 text-muted border-top pt-2" style={{ fontSize: '0.75rem' }}><i className="bi bi-chevron-up me-1"></i>Recolher</div>
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ))
-                    )}
+              <div className="modal-body p-0">
+                {/* 5 KPI Cards Interativos */}
+                <div className="p-3" style={{ backgroundColor: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                  <div className="row g-2">
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('todos'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? '#1e293b' : '#fff', cursor: 'pointer', transition: 'all 0.2s', border: '1px solid #e2e8f0' }}
+                        title="Ver todas as bobinas bipadas neste filtro"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? '#fff' : '#1e293b' }}>
+                          {kpiConferencia.total}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? '#94a3b8' : '#64748b' }}>
+                          Total Contado
+                        </div>
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('ok'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? '#15803d' : '#f0fdf4', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #22c55e', border: '1px solid #dcfce7' }}
+                        title="Ver bobinas confirmadas no SAP"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? '#fff' : '#15803d' }}>
+                          {kpiConferencia.ok}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? '#bbf7d0' : '#15803d' }}>
+                          <i className="bi bi-check-circle-fill me-1"></i>OK / Encontrado
+                        </div>
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('sobrando'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? '#7c3aed' : '#faf5ff', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #8b5cf6', border: '1px solid #f3e8ff' }}
+                        title="Ver bobinas que não constavam no SAP"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? '#fff' : '#7c3aed' }}>
+                          {kpiConferencia.sobrando}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? '#ddd6fe' : '#7c3aed' }}>
+                          <i className="bi bi-plus-circle-fill me-1"></i>Sobra (Não SAP)
+                        </div>
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('divergencia'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? '#b91c1c' : '#fff1f2', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #ef4444', border: '1px solid #fee2e2' }}
+                        title="Ver bobinas encontradas em gôndola/gaveta divergente"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? '#fff' : '#b91c1c' }}>
+                          {kpiConferencia.divergencia}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? '#fecaca' : '#b91c1c' }}>
+                          <i className="bi bi-geo-fill me-1"></i>Loc. Incorreto
+                        </div>
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('faltando'); setConferenciaStatusFilter('faltando'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'faltando' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'faltando' ? '#b45309' : '#fffbeb', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #f59e0b', border: '1px solid #fef3c7' }}
+                        title="Ver bobinas cadastradas no SAP que ainda não foram bipadas"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'faltando' ? '#fff' : '#b45309' }}>
+                          {kpiConferencia.faltando}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'faltando' ? '#fde68a' : '#b45309' }}>
+                          <i className="bi bi-exclamation-triangle-fill me-1"></i>Pendentes SAP
+                        </div>
+                      </button>
+                    </div>
                   </div>
                 </div>
-                {totalPaginas > 1 && (<div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top"><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))} disabled={paginaAtual === 1}>Anterior</button><span className="small text-muted fw-semibold">Página {paginaCorrigida} de {totalPaginas}</span><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))} disabled={paginaAtual === totalPaginas}>Próxima</button></div>)}
+
+                {/* Filtros Contextuais */}
+                <div className="p-3" style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: '#fff' }}>
+                  <div className="row g-2 align-items-end">
+                    {/* Filtro Data do Inventário */}
+                    <div className="col-12 col-sm-6 col-lg-3">
+                      <label className="form-label small fw-semibold text-secondary mb-1">
+                        <i className="bi bi-calendar-event me-1"></i>Data do Inventário
+                      </label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={conferenciaFilters.data_leitura}
+                        onChange={e => {
+                          setConferenciaFilters(prev => ({ ...prev, data_leitura: e.target.value }));
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <option value="">Todas as Datas</option>
+                        {listaDatasInventarios.map(d => {
+                          const isHoje = d.dataIso === obterDataHojeIso();
+                          return (
+                            <option key={d.dataIso} value={d.dataIso}>
+                              {d.dataFmt} {isHoje ? '(Hoje)' : ''}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
+                    {/* Filtro Colaborador (visível para Admin) */}
+                    {isAdmin && (
+                      <div className="col-12 col-sm-6 col-lg-3">
+                        <label className="form-label small fw-semibold text-secondary mb-1">
+                          <i className="bi bi-person-badge me-1"></i>Colaborador / Operador
+                        </label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={conferenciaFilters.operador}
+                          onChange={e => {
+                            setConferenciaFilters(prev => ({ ...prev, operador: e.target.value }));
+                            setPaginaAtual(1);
+                          }}
+                        >
+                          <option value="">Todos os Colaboradores</option>
+                          {listaOperadores.map(op => (
+                            <option key={op.cracha} value={op.cracha}>
+                              {op.nome} (Crachá: {op.cracha})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Filtro Depósito */}
+                    <div className="col-6 col-sm-4 col-lg-2">
+                      <label className="form-label small fw-semibold text-secondary mb-1">
+                        <i className="bi bi-box me-1"></i>Depósito
+                      </label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={conferenciaFilters.deposito}
+                        onChange={e => {
+                          setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }));
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <option value="">Todos</option>
+                        {depositosDisponiveis.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Busca Lote / Romaneio */}
+                    <div className={`col-6 col-sm-4 ${isAdmin ? 'col-lg-3' : 'col-lg-4'}`}>
+                      <label className="form-label small fw-semibold text-secondary mb-1">
+                        <i className="bi bi-search me-1"></i>Buscar Código
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm"
+                        placeholder="Lote, romaneio..."
+                        value={conferenciaFilters.lote}
+                        onChange={e => {
+                          setConferenciaFilters(prev => ({ ...prev, lote: e.target.value }));
+                          setPaginaAtual(1);
+                        }}
+                      />
+                    </div>
+
+                    {/* Botão Limpar Filtros */}
+                    <div className="col-12 col-sm-auto d-flex align-items-end">
+                      <button
+                        className="btn btn-outline-danger btn-sm w-100"
+                        title="Limpar todos os filtros"
+                        onClick={() => {
+                          setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '', operador: '' });
+                          setConferenciaStatusFilter('todos');
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <i className="bi bi-x-lg me-1"></i>Limpar
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Banner de Contexto Ativo (Data / Colaborador) */}
+                  {(conferenciaFilters.operador || conferenciaFilters.data_leitura) && (
+                    <div className="mt-3 p-2 px-3 rounded-2 d-flex justify-content-between align-items-center flex-wrap gap-2" style={{ backgroundColor: '#eff6ff', border: '1px solid #bfdbfe' }}>
+                      <div className="d-flex align-items-center gap-2 small">
+                        <i className="bi bi-info-circle-fill text-primary fs-5"></i>
+                        <span>
+                          {conferenciaFilters.data_leitura ? (
+                            <>Inventário de <strong>{listaDatasInventarios.find(d => d.dataIso === conferenciaFilters.data_leitura)?.dataFmt || conferenciaFilters.data_leitura}</strong></>
+                          ) : (
+                            <>Todas as datas</>
+                          )}
+                          {conferenciaFilters.operador && (
+                            <> · Colaborador: <strong>{listaOperadores.find(o => String(o.cracha) === String(conferenciaFilters.operador))?.nome || conferenciaFilters.operador}</strong></>
+                          )}
+                          {' · '}<strong>{itensNoContexto.length}</strong> bobinas nesta contagem
+                        </span>
+                      </div>
+                      <button
+                        className="btn btn-sm btn-link text-primary text-decoration-none p-0 fw-semibold small"
+                        onClick={() => {
+                          setConferenciaFilters(prev => ({ ...prev, operador: '', data_leitura: '' }));
+                          setConferenciaTab('inventarios');
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <i className="bi bi-arrow-counterclockwise me-1"></i>Ver todos os inventários
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* ============================================================== */}
+                {/* ABA 1: RESUMO DE INVENTÁRIOS REALIZADOS (DATA + COLABORADOR)  */}
+                {/* ============================================================== */}
+                {conferenciaTab === 'inventarios' && (
+                  <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                    <table className="table table-hover table-sm align-middle mb-0" style={{ fontSize: '0.84rem' }}>
+                      <thead style={{ position: 'sticky', top: 0, zIndex: 2, backgroundColor: '#f1f5f9' }}>
+                        <tr>
+                          <th className="py-2 px-3 text-secondary text-uppercase" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Data do Inventário</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Colaborador</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Depósitos</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Total Contado</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>OK (No SAP)</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Sobra (Não SAP)</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Loc. Incorreto</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Acurácia</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {inventariosPaginados.length === 0 ? (
+                          <tr>
+                            <td colSpan="9" className="text-center text-muted py-5">
+                              <i className="bi bi-calendar-x fs-2 d-block mb-2 opacity-50"></i>
+                              Nenhum inventário encontrado para os filtros selecionados
+                            </td>
+                          </tr>
+                        ) : inventariosPaginados.map(inv => {
+                          const taxa = inv.total > 0 ? ((inv.ok / inv.total) * 100).toFixed(1) : 0;
+                          const isHoje = inv.dataIso === obterDataHojeIso();
+                          return (
+                            <tr key={inv.id}>
+                              <td className="py-2 px-3">
+                                <div className="d-flex align-items-center gap-2">
+                                  <span className="fw-bold text-dark">{inv.dataFmt}</span>
+                                  {isHoje && (
+                                    <span className="badge bg-success bg-opacity-25 text-success fw-bold px-2 py-0" style={{ fontSize: '0.68rem' }}>
+                                      Hoje
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-muted" style={{ fontSize: '0.72rem' }}>
+                                  <i className="bi bi-clock me-1"></i>{inv.primeiraHora} às {inv.ultimaHora}
+                                </div>
+                              </td>
+                              <td className="py-2 px-3">
+                                <div className="d-flex align-items-center gap-2">
+                                  <div className="rounded-circle bg-primary bg-opacity-10 text-primary fw-bold d-flex align-items-center justify-content-center" style={{ width: '32px', height: '32px', fontSize: '0.75rem' }}>
+                                    {obterIniciais(inv.nome)}
+                                  </div>
+                                  <div>
+                                    <div className="fw-bold text-dark">{inv.nome}</div>
+                                    <div className="text-muted" style={{ fontSize: '0.72rem' }}>Crachá: {inv.cracha}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-2 px-3 small text-muted">
+                                {Array.from(inv.depositos).join(', ') || '-'}
+                              </td>
+                              <td className="py-2 px-3 text-center fw-bold fs-6 text-dark">
+                                {inv.total}
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className="badge bg-success bg-opacity-15 text-success fw-bold px-2 py-1" style={{ fontSize: '0.75rem' }}>
+                                  {inv.ok}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className="badge fw-bold px-2 py-1" style={{ backgroundColor: '#ede9fe', color: '#7c3aed', fontSize: '0.75rem' }}>
+                                  {inv.sobrando}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className="badge bg-danger bg-opacity-15 text-danger fw-bold px-2 py-1" style={{ fontSize: '0.75rem' }}>
+                                  {inv.divergencia}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center" style={{ minWidth: '100px' }}>
+                                <div className="fw-bold small mb-1">{taxa}%</div>
+                                <div className="progress" style={{ height: '4px' }}>
+                                  <div className="progress-bar bg-success" style={{ width: `${taxa}%` }}></div>
+                                </div>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <button
+                                  className="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-1"
+                                  onClick={() => {
+                                    setConferenciaFilters(prev => ({ ...prev, operador: String(inv.cracha), data_leitura: inv.dataIso }));
+                                    setConferenciaTab('leituras');
+                                    setPaginaAtual(1);
+                                  }}
+                                  title="Ver as bobinas contadas neste inventário específico"
+                                >
+                                  <i className="bi bi-box-seam"></i> Ver Bobinas ({inv.total})
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* ============================================================== */}
+                {/* ABA 2: BOBINAS CONTADAS (LEITURAS)                             */}
+                {/* ============================================================== */}
+                {conferenciaTab === 'leituras' && (
+                  <>
+                    {/* Tabela Desktop */}
+                    <div className="d-none d-md-block" style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                      <table className="table table-hover table-sm align-middle mb-0" style={{ fontSize: '0.82rem' }}>
+                        <thead style={{ position: 'sticky', top: 0, zIndex: 2, backgroundColor: '#f1f5f9' }}>
+                          <tr>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Lote / Romaneio</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Material</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Endereço Lido</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Endereço SAP</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Status</th>
+                            {isAdmin && <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Colaborador</th>}
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Data/Hora</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {leiturasPaginadas.length === 0 ? (
+                            <tr>
+                              <td colSpan={isAdmin ? 7 : 6} className="text-center text-muted py-5">
+                                <i className="bi bi-inbox fs-3 d-block mb-2 opacity-50"></i>
+                                Nenhuma bobina encontrada para os filtros selecionados
+                              </td>
+                            </tr>
+                          ) : leiturasPaginadas.map((leitura, index) => {
+                            const confKey = `conf_tbl_${leitura.codigo}_${index}`;
+                            const expandido = lotesExpandidos[confKey];
+                            const badgeConfig = {
+                              ok: { bg: '#dcfce7', color: '#15803d', icon: 'bi-check-circle-fill', label: 'OK' },
+                              faltando: { bg: '#fef9c3', color: '#b45309', icon: 'bi-exclamation-triangle-fill', label: 'Faltando' },
+                              sobrando: { bg: '#ede9fe', color: '#7c3aed', icon: 'bi-plus-circle-fill', label: 'Sobra' },
+                              divergencia: { bg: '#fee2e2', color: '#b91c1c', icon: 'bi-geo-fill', label: 'Local Incorreto' },
+                            }[leitura.tipo] || { bg: '#f1f5f9', color: '#475569', icon: 'bi-question-circle', label: leitura.status };
+                            const rowBg = expandido ? '#f8fafc' : '#fff';
+                            return (
+                              <React.Fragment key={confKey}>
+                                <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer', backgroundColor: rowBg, transition: 'background 0.15s' }}>
+                                  <td className="px-3 py-2">
+                                    <span className="vp-mono fw-bold" style={{ color: '#1e293b' }}>{leitura.codigo || '-'}</span>
+                                    {leitura.romaneio && leitura.romaneio !== '-' && <div className="text-muted" style={{ fontSize: '0.72rem' }}>ROM: {leitura.romaneio}</div>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <div style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={leitura.descricao}>
+                                      {leitura.material !== '-' ? leitura.material : ''}{leitura.material !== '-' && leitura.descricao !== '-' ? ' · ' : ''}
+                                      <span className="text-muted">{leitura.descricao !== '-' ? leitura.descricao : '-'}</span>
+                                    </div>
+                                  </td>
+                                  <td className="px-3 py-2"><span style={{ fontSize: '0.78rem', color: '#0284c7', fontWeight: 600 }}>{leitura.endereco_lido || '-'}</span></td>
+                                  <td className="px-3 py-2"><span style={{ fontSize: '0.78rem' }}>{leitura.endereco_sap || '-'}</span></td>
+                                  <td className="px-3 py-2">
+                                    <span className="badge rounded-pill d-inline-flex align-items-center gap-1" style={{ backgroundColor: badgeConfig.bg, color: badgeConfig.color, fontSize: '0.72rem', fontWeight: 700, padding: '4px 10px', whiteSpace: 'nowrap' }}>
+                                      <i className={`bi ${badgeConfig.icon}`}></i>{badgeConfig.label}
+                                    </span>
+                                  </td>
+                                  {isAdmin && (
+                                    <td className="px-3 py-2">
+                                      <div className="fw-semibold text-dark" style={{ fontSize: '0.78rem' }}>{leitura.nome || leitura.cracha || '-'}</div>
+                                      <div className="text-muted" style={{ fontSize: '0.7rem' }}>Crachá: {leitura.cracha}</div>
+                                    </td>
+                                  )}
+                                  <td className="px-3 py-2 text-muted" style={{ whiteSpace: 'nowrap', fontSize: '0.78rem' }}>{leitura.dataHora || '-'}</td>
+                                </tr>
+                                {expandido && (
+                                  <tr style={{ backgroundColor: '#f8fafc' }}>
+                                    <td colSpan={isAdmin ? 7 : 6} className="p-0">
+                                      <div className="p-3 border-top border-bottom" style={{ fontSize: '0.8rem' }}>
+                                        <div className="row g-3">
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Peso Líquido</div><div className="fw-semibold">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Dimensões</div><div className="fw-semibold">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm × ${leitura.espessura} µm` : '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Filial</div><div className="fw-semibold">{leitura.filial || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Depósito</div><div className="fw-semibold">{leitura.deposito || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Agrupador</div><div className="fw-semibold">{leitura.agrupador || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Rota</div><div className="fw-semibold">{leitura.rota || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>OP / OV</div><div className="fw-semibold">{leitura.ordem_producao || '-'} / {leitura.ordem_venda || '-'}</div></div>
+                                          <div className="col-12 col-md-9"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Cliente</div><div className="fw-semibold">{[leitura.cliente, leitura.nome_cliente].filter(v => v && v !== '-').join(' — ') || '-'}</div></div>
+                                        </div>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Cards Mobile */}
+                    <div className="d-md-none" style={{ maxHeight: '58vh', overflowY: 'auto', backgroundColor: '#f8fafc', padding: '0.75rem' }}>
+                      {leiturasPaginadas.length === 0 ? (
+                        <div className="text-center text-muted p-4"><i className="bi bi-inbox fs-2 d-block mb-2 opacity-50"></i>Nenhum registro encontrado.</div>
+                      ) : leiturasPaginadas.map((leitura, index) => {
+                        const confKey = `conf_mob_${leitura.codigo}_${index}`;
+                        const expandido = lotesExpandidos[confKey];
+                        const tipoConfig = {
+                          ok: { border: '#22c55e', bg: '#f0fdf4', badgeBg: '#dcfce7', badgeColor: '#15803d', icon: 'bi-check-circle-fill', label: 'OK' },
+                          faltando: { border: '#f59e0b', bg: '#fffbeb', badgeBg: '#fef9c3', badgeColor: '#b45309', icon: 'bi-exclamation-triangle-fill', label: 'Faltando' },
+                          sobrando: { border: '#8b5cf6', bg: '#faf5ff', badgeBg: '#ede9fe', badgeColor: '#7c3aed', icon: 'bi-plus-circle-fill', label: 'Sobra' },
+                          divergencia: { border: '#ef4444', bg: '#fff1f2', badgeBg: '#fee2e2', badgeColor: '#b91c1c', icon: 'bi-geo-fill', label: 'Local Incorreto' },
+                        }[leitura.tipo] || { border: '#94a3b8', bg: '#f8fafc', badgeBg: '#f1f5f9', badgeColor: '#475569', icon: 'bi-question', label: leitura.status };
+                        return (
+                          <div key={confKey} className="mb-2 rounded-3 shadow-sm overflow-hidden" onClick={() => toggleLoteExpandido(confKey)} style={{ backgroundColor: tipoConfig.bg, border: `1px solid ${tipoConfig.border}`, cursor: 'pointer', borderLeft: `4px solid ${tipoConfig.border}` }}>
+                            <div className="p-3">
+                              <div className="d-flex justify-content-between align-items-start">
+                                <span className="vp-mono fw-bold" style={{ color: '#1e293b', fontSize: '0.9rem' }}>{leitura.codigo}</span>
+                                <span className="badge rounded-pill d-inline-flex align-items-center gap-1" style={{ backgroundColor: tipoConfig.badgeBg, color: tipoConfig.badgeColor, fontSize: '0.68rem', fontWeight: 700 }}>
+                                  <i className={`bi ${tipoConfig.icon}`}></i>{tipoConfig.label}
+                                </span>
+                              </div>
+                              {leitura.descricao !== '-' && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>{leitura.descricao}</div>}
+                              <div className="d-flex gap-2 mt-2 flex-wrap">
+                                {leitura.dataHora !== '-' && <span className="text-muted" style={{ fontSize: '0.72rem' }}><i className="bi bi-clock me-1"></i>{leitura.dataHora}</span>}
+                                {leitura.nome !== '-' && <span className="text-muted" style={{ fontSize: '0.72rem' }}><i className="bi bi-person me-1"></i>{leitura.nome}</span>}
+                              </div>
+                              {expandido && (
+                                <div className="mt-3 pt-3 border-top" style={{ borderColor: `${tipoConfig.border}66 !important` }}>
+                                  <div className="row g-2" style={{ fontSize: '0.78rem' }}>
+                                    <div className="col-12"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Endereço Lido</span><span className="fw-bold" style={{ color: '#0284c7' }}>{leitura.endereco_lido || '-'}</span></div>
+                                    <div className="col-12"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Endereço SAP</span><span className="fw-semibold">{leitura.endereco_sap || '-'}</span></div>
+                                    <div className="col-6"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Peso</span><span className="fw-semibold">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</span></div>
+                                    <div className="col-6"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Depósito</span><span className="fw-semibold">{leitura.deposito || '-'}</span></div>
+                                    <div className="col-12 text-center mt-1"><span className="text-muted" style={{ fontSize: '0.72rem' }}><i className="bi bi-chevron-up"></i> Recolher</span></div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* ============================================================== */}
+                {/* ABA 3: BOBINAS PENDENTES NO SAP (FALTANDO)                     */}
+                {/* ============================================================== */}
+                {conferenciaTab === 'faltando' && (
+                  <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                    <div className="p-2 px-3 bg-warning bg-opacity-10 text-dark small border-bottom d-flex align-items-center gap-2">
+                      <i className="bi bi-info-circle-fill text-warning fs-5"></i>
+                      <span>
+                        Estas bobinas constam na base do <strong>SAP</strong> mas <strong>ainda não foram bipadas</strong> por nenhum colaborador neste depósito.
+                      </span>
+                    </div>
+                    <table className="table table-hover table-sm align-middle mb-0" style={{ fontSize: '0.82rem' }}>
+                      <thead style={{ position: 'sticky', top: 0, zIndex: 2, backgroundColor: '#f1f5f9' }}>
+                        <tr>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Lote / Romaneio</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Material</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Depósito SAP</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Endereço SAP</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Peso</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {faltandoPaginadas.length === 0 ? (
+                          <tr>
+                            <td colSpan="6" className="text-center text-success py-5">
+                              <i className="bi bi-check-circle-fill fs-2 d-block mb-2 text-success"></i>
+                              Parabéns! Todas as bobinas esperadas no SAP para este contexto foram bipadas!
+                            </td>
+                          </tr>
+                        ) : faltandoPaginadas.map((item, idx) => (
+                          <tr key={`faltando_${item.codigo}_${idx}`}>
+                            <td className="px-3 py-2">
+                              <span className="vp-mono fw-bold text-dark">{item.codigo}</span>
+                              {item.romaneio && item.romaneio !== '-' && <div className="text-muted" style={{ fontSize: '0.72rem' }}>ROM: {item.romaneio}</div>}
+                            </td>
+                            <td className="px-3 py-2">
+                              <div style={{ maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.descricao}>
+                                {item.material !== '-' ? item.material : ''}{item.material !== '-' && item.descricao !== '-' ? ' · ' : ''}
+                                <span className="text-muted">{item.descricao !== '-' ? item.descricao : '-'}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2"><span className="badge bg-light text-dark border">{item.deposito || '-'}</span></td>
+                            <td className="px-3 py-2"><span style={{ fontSize: '0.78rem' }}>{item.endereco_sap || '-'}</span></td>
+                            <td className="px-3 py-2 text-muted">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</td>
+                            <td className="px-3 py-2">
+                              <span className="badge bg-warning bg-opacity-25 text-dark fw-bold px-2 py-1">
+                                <i className="bi bi-clock-history me-1"></i>Pendente
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Paginação */}
+                {totalPaginas > 1 && (
+                  <div className="d-flex justify-content-between align-items-center px-3 py-2" style={{ borderTop: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                    <button className="btn btn-sm btn-outline-secondary" onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))} disabled={paginaAtual === 1}>
+                      <i className="bi bi-chevron-left"></i> Anterior
+                    </button>
+                    <span className="small text-muted fw-semibold">Página {paginaCorrigida} de {totalPaginas}</span>
+                    <button className="btn btn-sm btn-outline-secondary" onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))} disabled={paginaAtual === totalPaginas}>
+                      Próxima <i className="bi bi-chevron-right"></i>
+                    </button>
+                  </div>
+                )}
               </div>
-              <div className="modal-footer border-0 justify-content-center pb-4"><button type="button" className="vp-btn vp-btn-dark w-100 w-sm-auto" onClick={() => setShowConferencia(false)}>Fechar</button></div>
+
+              {/* Footer */}
+              <div className="modal-footer border-0 justify-content-between px-4 pb-4" style={{ backgroundColor: '#f8fafc', borderTop: '1px solid #e2e8f0' }}>
+                <button type="button" className="btn btn-outline-success d-flex align-items-center gap-2" onClick={exportarConferencia} title="Exportar dados filtrados para CSV">
+                  <i className="bi bi-download"></i> Exportar CSV
+                </button>
+                <button type="button" className="vp-btn vp-btn-dark" onClick={() => setShowConferencia(false)}>Fechar</button>
+              </div>
             </div>
           </div>
         </div>

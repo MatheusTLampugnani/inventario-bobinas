@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 
-const URL_ATUAL_FIXA = "https://monthly-meat-lounge-spelling.trycloudflare.com";
+const URL_ATUAL_FIXA = "/drone-api";
 
 const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
-    // Prioriza a URL_ATUAL_FIXA atualizada pelo script automatizado a cada inicialização
-    const apiPadrao = URL_ATUAL_FIXA || import.meta.env.VITE_API_URL;
+    // Prioriza a rota /drone-api integrada ao Nginx do servidor
+    const apiPadrao = URL_ATUAL_FIXA || import.meta.env.VITE_API_URL || "/drone-api";
     const [urlApi, setUrlApi] = useState(() => {
         const custom = localStorage.getItem("VITE_API_URL_CUSTOM");
         // Auto-limpa URLs antigas do trycloudflare salvas em navegadores de operadores
-        if (custom && custom.includes("trycloudflare.com") && custom !== URL_ATUAL_FIXA) {
+        if (custom && (custom.includes("trycloudflare.com") || custom.includes("localtunnel.me") || custom.includes("127.0.0.1:8000"))) {
             localStorage.setItem("VITE_API_URL_CUSTOM", URL_ATUAL_FIXA);
             return URL_ATUAL_FIXA;
         }
@@ -360,6 +360,26 @@ const ProcessadorDroneTurbo = ({ aoConcluir, aoCancelar }) => {
                         </div>
                     </div>
                 </div>
+
+                {resultado.codigos && resultado.codigos.length > 0 && (
+                    <div className="mb-3 text-start" style={{ maxWidth: '400px', margin: '0 auto' }}>
+                        <div className="d-flex justify-content-between align-items-center mb-1">
+                            <span className="small fw-bold text-secondary">
+                                Lotes / Códigos Identificados ({resultado.codigos.length}):
+                            </span>
+                            <span className="badge bg-secondary-subtle text-secondary" style={{ fontSize: '0.7rem' }}>
+                                Deduplicado na importação
+                            </span>
+                        </div>
+                        <div className="p-2 border rounded bg-light" style={{ maxHeight: '120px', overflowY: 'auto', fontSize: '0.75rem' }}>
+                            {resultado.codigos.map((cod, idx) => (
+                                <div key={idx} className="font-monospace text-truncate py-1 border-bottom border-light-subtle text-dark">
+                                    <span className="text-primary me-1">#{idx + 1}</span> {cod}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 <div style={{ display: 'flex', gap: '1rem', width: '100%', maxWidth: '400px', margin: '0 auto' }}>
                     <button 

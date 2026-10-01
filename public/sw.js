@@ -1,10 +1,10 @@
-const CACHE_NAME = 'inv-bobinas-v1';
+const CACHE_NAME = 'inv-bobinas-v6';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/favicon.ico',
-  '/pwa-192x192.png',
-  '/pwa-512x512.png'
+  './',
+  './index.html',
+  './favicon.ico',
+  './pwa-192x192.png',
+  './pwa-512x512.png'
 ];
 
 self.addEventListener('install', (event) => {
