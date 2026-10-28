@@ -6,8 +6,9 @@
 //   - Arquivos com hash do Vite (/assets/*): cache primeiro. O nome muda a cada build, então
 //     o conteúdo de um nome nunca muda. Os do index.html atual são guardados já na instalação.
 //   - Demais arquivos estáticos: cache com revalidação em segundo plano.
-//   - Requisições que não são GET, de outra origem ou da API (/drone-api) não são interceptadas.
-const CACHE_NAME = 'inv-bobinas-v7';
+//   - Requisições que não são GET, de outra origem, fora do app (ex.: /acesso/, o Portal que diz quem
+//     está logado) ou da API (/drone-api) não são interceptadas.
+const CACHE_NAME = 'inv-bobinas-v8';
 const ASSETS = [
   './',
   './index.html',
@@ -19,6 +20,7 @@ const ASSETS = [
 
 const INDEX_URL = new URL('./index.html', self.location).href;
 const SCOPE_URL = new URL('./', self.location).href;
+const SCOPE_PATH = new URL(SCOPE_URL).pathname;
 
 // JS/CSS referenciados pelo index.html (ex.: /bobinas/assets/index-AbC123.js)
 const assetsDoIndex = (html) => [...html.matchAll(/(?:src|href)="([^"]*\/assets\/[^"]+\.(?:js|css))"/g)]
@@ -71,6 +73,7 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  if (!url.pathname.startsWith(SCOPE_PATH)) return;
   if (url.pathname.includes('/drone-api')) return;
 
   // Navegação: rede primeiro (deploy novo na hora), cache se estiver sem rede

@@ -66,6 +66,8 @@ function App() {
   const [nomeLogado, setNomeLogado] = useState(() => sessionStorage.getItem('usuario_nome') || '');
   const [inputCracha, setInputCracha] = useState('');
   const [carregandoLogin, setCarregandoLogin] = useState(false);
+  // Login único: com rede, primeiro pergunta ao Portal de Acesso quem está logado (offline vai direto)
+  const [verificandoPortal, setVerificandoPortal] = useState(() => navigator.onLine);
   const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('usuario_is_admin') === 'true');
   // Setor/unidade do colaborador (cadastro do crachá). A contagem pertence ao colaborador;
   // a filial gravada em cada leitura é a da BOBINA, que pode ser de outra unidade.
@@ -254,10 +256,9 @@ function App() {
     });
   }
 
-  const fazerLogin = async () => {
-    if (!inputCracha.trim()) { abrirAlerta('Atenção', 'Insira o número do seu crachá.'); return; }
+  // Confere o crachá no Supabase e entra. Usado pela tela de crachá e pelo login único do Portal.
+  const entrarComCracha = async (cracha) => {
     setCarregandoLogin(true);
-    const cracha = inputCracha.trim();
     const entrar = (dados) => {
       setCrachaLogado(cracha);
       setNomeLogado(dados.nome_completo || 'Operador');
@@ -271,10 +272,12 @@ function App() {
       if (data) {
         entrar(data);
         gravarCacheLocal('cache_logins', { ...cacheLogins, [cracha]: { nome_completo: data.nome_completo, admin: data.admin, setor: data.setor, unidade: data.unidade } });
+        return true;
       } else if (!error || ehErroPermanente(error)) {
         abrirAlerta('Acesso Negado', 'Crachá não encontrado.');
       } else if (cacheLogins[cracha]) {
         entrar(cacheLogins[cracha]);
+        return true;
       } else {
         abrirAlerta('Sem conexão', 'Não foi possível validar o crachá no servidor. Verifique a conexão e tente novamente.');
       }
@@ -282,11 +285,55 @@ function App() {
       console.error(err);
       abrirAlerta('Erro', 'Não foi possível conectar ao banco Supabase.');
     } finally { setCarregandoLogin(false); }
+    return false;
   }
 
+  const fazerLogin = async () => {
+    if (!inputCracha.trim()) { abrirAlerta('Atenção', 'Insira o número do seu crachá.'); return; }
+    await entrarComCracha(inputCracha.trim());
+  }
+
+  const limparOperador = () => {
+    setCrachaLogado(''); setNomeLogado(''); setInputCracha(''); setIsAdmin(false); setPerfilLogado({ setor: null, unidade: null });
+  };
+
+  // Login único: com rede, o operador é quem entrou no Portal de Acesso (mesmo endereço, pelo Nginx).
+  // Um login do Portal que não é crachá (ex.: administrador) descarta o operador anterior e a tela de crachá aparece.
+  useEffect(() => {
+    if (!navigator.onLine) return undefined;
+    let cancelado = false;
+    (async () => {
+      try {
+        const resposta = await fetch('/acesso/api/eu', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } });
+        if (!resposta.ok) return;
+        const eu = await resposta.json();
+        const crachaPortal = String(eu?.usuario || '').trim();
+        if (cancelado || !crachaPortal || crachaPortal === sessionStorage.getItem('usuario_cracha')) return;
+        if (/^\d+$/.test(crachaPortal)) await entrarComCracha(crachaPortal);
+        else limparOperador();
+      } catch {
+        // Sem Portal (ex.: desenvolvimento) ou rede instável: segue com o login por crachá
+      } finally {
+        if (!cancelado) setVerificandoPortal(false);
+      }
+    })();
+    return () => { cancelado = true; };
+    // Só na abertura do app; entrarComCracha e limparOperador só mexem em estado
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Com rede, Sair encerra também o login do Portal; senão o login único entraria de novo na mesma hora.
+  // Offline, só volta para a tela de crachá (o inventário do aparelho é mantido).
   const fazerLogout = () => {
-    abrirConfirmacao('Sair', 'Deseja sair? Seus dados continuarão na tela.', () => {
-      setCrachaLogado(''); setNomeLogado(''); setInputCracha(''); setIsAdmin(false); setPerfilLogado({ setor: null, unidade: null });
+    abrirConfirmacao('Sair', 'Deseja sair? Seus dados continuarão na tela.', async () => {
+      limparOperador();
+      if (!navigator.onLine) return;
+      try {
+        const resposta = await fetch('/acesso/api/sair', { method: 'POST', credentials: 'same-origin', headers: { 'X-Portal': '1' } });
+        if (resposta.ok) window.location.href = `/acesso/entrar?volta=${encodeURIComponent(window.location.pathname)}`;
+      } catch {
+        // Sem Portal: a tela de crachá já aparece
+      }
     });
   }
 
@@ -1386,6 +1433,15 @@ A base SAP NÃO foi salva no servidor (${falhaServidor}). A contagem neste apare
 
   // IDENTIFICA A ROTA ATUAL PARA EXIBIÇÃO NO CABEÇALHO DE LEITURA ATIVA
   const nomeRotaAtiva = rotasDisponiveis.find(r => String(r.id) === String(rotaAtual))?.rota;
+
+  if (verificandoPortal) {
+    return (
+      <div className="min-vh-100 d-flex flex-column justify-content-center align-items-center gap-2" style={{ backgroundColor: '#f4f6f8' }}>
+        <div className="spinner-border text-danger" role="status"></div>
+        <span className="small text-muted">Entrando com o seu login do Portal...</span>
+      </div>
+    );
+  }
 
     if (!crachaLogado) {
     return (
