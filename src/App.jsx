@@ -1,17 +1,33 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
 import Header from './components/Header'
 import Scanner from './components/Scanner'
 import logoVideplast from './assets/videplast-brand.png'
 import { supabase } from './supabase'
-import FilterControls from './components/FilterControls'
 import ProcessadorDrone from './components/ProcessadorDrone'
 import db from './db'
 import { useSyncManager } from './hooks/useSyncManager'
+import { aguardarSincronizacao, ehErroPermanente, enviarSessoesPendentes, gerarUuid, migrarSessaoLegada, registrarSessaoLocal, sessaoPendenteLocal, sinalTimeout } from './sync'
+import { buscarPorValores, buscarTodasPaginas, salvarBaseSap } from './lib/consultas'
+import { baixarCSV, campoCSV } from './lib/csv'
+import {
+  calcularStatusConciliacao, chaveBobina, chavesDaBobina, determinarFilial, formatarEnderecoSAP, limparCodigo,
+  montarRelatorioConciliado, processarEntradaMassa as interpretarEntrada, removerZeros
+} from './lib/inventario'
 import './App.css'
 
-const limparCodigo = (codigo) => {
-    if (!codigo) return '';
-    return String(codigo).replace(/^0+/, '');
+// Períodos (dias) da conferência: leituras carregadas e bases SAP consideradas em "Pendentes SAP".
+// As bases SAP são grandes (milhares de linhas por importação), por isso a janela delas é menor.
+const PERIODOS_CONFERENCIA = [7, 30, 90, 180, 365];
+const PERIODOS_PENDENTES = [1, 3, 7, 15, 30];
+
+// sessionStorage tem cota (~5 MB). Uma planilha SAP grande não pode derrubar o app.
+const salvarNaSessao = (chave, valor) => {
+  try {
+    if (valor === null || valor === undefined) sessionStorage.removeItem(chave);
+    else sessionStorage.setItem(chave, valor);
+  } catch (err) {
+    console.warn(`[Sessão] Não foi possível salvar "${chave}" localmente (cota cheia?).`, err);
+  }
 };
 
 const obterIniciais = (nome) => {
@@ -23,24 +39,21 @@ const obterIniciais = (nome) => {
   return partes[0].substring(0, 2).toUpperCase();
 };
 
-const determinarFilial = (lote) => {
-  if (!lote) return null;
-  const prefixo = lote.toUpperCase().substring(0, 2);
-  if (prefixo === 'MA') return '1003';
-  if (prefixo === 'RA') return '1005';
-  if (prefixo === 'UA' || prefixo === 'UV') return '1006';
-  if (prefixo === 'TA') return '1007';
-  if (prefixo === 'ZA') return '1009';
-  if (prefixo === 'FA') return '1010';
-  
-  // Qualquer outro formato de lote (ou prefixo VA) assume-se como filial de Videira (1001)
-  return '1001';
+const dataIsoLocal = (d) => {
+  const ano = d.getFullYear();
+  const mes = String(d.getMonth() + 1).padStart(2, '0');
+  const dia = String(d.getDate()).padStart(2, '0');
+  return `${ano}-${mes}-${dia}`;
 };
 
-const removerZeros = (val) => {
-    if (!val) return null;
-    const limpo = val.trim().replace(/^0+/, '');
-    return limpo === '' ? '0' : limpo;
+const obterDataHojeIso = () => dataIsoLocal(new Date());
+
+// Depósitos e rotas ficam em cache para o operador conseguir iniciar uma contagem sem rede
+const lerCacheLocal = (chave) => {
+  try { return JSON.parse(localStorage.getItem(chave) || 'null'); } catch { return null; }
+};
+const gravarCacheLocal = (chave, valor) => {
+  try { localStorage.setItem(chave, JSON.stringify(valor)); } catch { /* cota cheia: segue sem cache */ }
 };
 
 function App() {
@@ -53,12 +66,19 @@ function App() {
   const [nomeLogado, setNomeLogado] = useState(() => sessionStorage.getItem('usuario_nome') || '');
   const [inputCracha, setInputCracha] = useState('');
   const [carregandoLogin, setCarregandoLogin] = useState(false);
+  // Login único: com rede, primeiro pergunta ao Portal de Acesso quem está logado (offline vai direto)
+  const [verificandoPortal, setVerificandoPortal] = useState(() => navigator.onLine);
   const [isAdmin, setIsAdmin] = useState(() => sessionStorage.getItem('usuario_is_admin') === 'true');
+  // Setor/unidade do colaborador (cadastro do crachá). A contagem pertence ao colaborador;
+  // a filial gravada em cada leitura é a da BOBINA, que pode ser de outra unidade.
+  const [perfilLogado, setPerfilLogado] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('usuario_perfil') || 'null') || { setor: null, unidade: null }; } catch { return { setor: null, unidade: null }; }
+  });
   const [leiturasGlobais, setLeiturasGlobais] = useState([]);
-  const [depositosDisponiveis, setDepositosDisponiveis] = useState([]);
+  const [depositosDisponiveis, setDepositosDisponiveis] = useState(() => lerCacheLocal('cache_depositos') || []);
 
   // OFFLINE-FIRST: hook de sincronização automática com IndexedDB
-  const { isOnline, pendingCount, syncNow } = useSyncManager();
+  const { isOnline, pendingCount, errorCount, syncNow, reenviarComErro } = useSyncManager();
 
   const aceitarAtualizacao = () => {
     if (swRegistration && swRegistration.waiting) {
@@ -69,12 +89,21 @@ function App() {
 
   
   // ESTADO ROTAS
-  const [rotasDisponiveis, setRotasDisponiveis] = useState([]);
+  const [rotasDisponiveis, setRotasDisponiveis] = useState(() => lerCacheLocal('cache_rotas') || []);
   const [rotaAtual, setRotaAtual] = useState(''); 
 
   // ESTADOS DO FILTRO E PAGINAÇÃO
-  const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '' });
-  const [conferenciaSort, setConferenciaSort] = useState({ field: 'Data', order: 'desc' });
+  const [conferenciaFilters, setConferenciaFilters] = useState({ lote: '', data_leitura: '', filial: '', deposito: '', operador: '', unidade_operador: '' });
+  const [conferenciaSort] = useState({ field: 'Data', order: 'desc' });
+  const [conferenciaStatusFilter, setConferenciaStatusFilter] = useState('todos');
+  const [conferenciaTab, setConferenciaTab] = useState('inventarios'); // 'inventarios' | 'leituras' | 'faltando'
+  const [bobinasFaltandoSap, setBobinasFaltandoSap] = useState([]);
+  const [periodoConferencia, setPeriodoConferencia] = useState(30);
+  const [periodoPendentes, setPeriodoPendentes] = useState(7);
+  const [carregandoPendentes, setCarregandoPendentes] = useState(false);
+  const [linhasBaseSapPeriodo, setLinhasBaseSapPeriodo] = useState(0);
+  const cargaPendentesAtual = useRef(0);
+  const [erroConferencia, setErroConferencia] = useState('');
   const [paginaAtual, setPaginaAtual] = useState(1);
   const ITENS_POR_PAGINA = 50;
 
@@ -93,13 +122,11 @@ function App() {
   const [sessaoId, setSessaoId] = useState(() => sessionStorage.getItem('sessao_id') || null);
 
   const [csvBobinas, setCsvBobinas] = useState(() => {
-    const saved = sessionStorage.getItem('csv_bobinas');
-    return saved ? JSON.parse(saved) : [];
+    try { return JSON.parse(sessionStorage.getItem('csv_bobinas') || '[]'); } catch { return []; }
   })
 
   const [bobinasLidas, setBobinasLidas] = useState(() => {
-    const saved = sessionStorage.getItem('lidas_bobinas');
-    return saved ? JSON.parse(saved) : [];
+    try { return JSON.parse(sessionStorage.getItem('lidas_bobinas') || '[]'); } catch { return []; }
   })
 
   const [modal, setModal] = useState({
@@ -113,6 +140,8 @@ function App() {
   const gondolaInputRef = useRef(null)
   const gavetaInputRef = useRef(null)
   const fileInputRef = useRef(null)
+  // Sessões já confirmadas no servidor nesta execução (evita uma consulta de rede a cada bipagem)
+  const sessoesConfirmadas = useRef(new Set())
 
   const toggleLoteExpandido = (loteKey) => {
     setLotesExpandidos(prev => ({ ...prev, [loteKey]: !prev[loteKey] }));
@@ -123,11 +152,18 @@ function App() {
         try {
             const { data: deps, error: errDeps } = await supabase.from('depositos').select('*').order('id', { ascending: true });
             if (errDeps) throw errDeps;
-            if (deps) setDepositosDisponiveis(deps.map(d => ({ id: d.id, nome: d.nome, requerEndereco: d.requer_endereco })));
-            
+            if (deps) {
+              const lista = deps.map(d => ({ id: d.id, nome: d.nome, requerEndereco: d.requer_endereco }));
+              setDepositosDisponiveis(lista);
+              gravarCacheLocal('cache_depositos', lista);
+            }
+
             const { data: rots, error: errRots } = await supabase.from('rotas').select('id, rota');
             if (errRots) throw errRots;
-            if (rots) setRotasDisponiveis(rots);
+            if (rots) {
+              setRotasDisponiveis(rots);
+              gravarCacheLocal('cache_rotas', rots);
+            }
         } catch (err) {
             console.error("Erro ao carregar dados iniciais:", err);
         }
@@ -149,25 +185,33 @@ function App() {
   }, []);
 
   useEffect(() => {
-    sessionStorage.setItem('csv_bobinas', JSON.stringify(csvBobinas));
-    sessionStorage.setItem('lidas_bobinas', JSON.stringify(bobinasLidas));
-    if (sessaoId) sessionStorage.setItem('sessao_id', sessaoId);
-    else sessionStorage.removeItem('sessao_id');
-    if (tipoContagem) sessionStorage.setItem('tipo_contagem', tipoContagem);
-    else sessionStorage.removeItem('tipo_contagem');
+    salvarNaSessao('csv_bobinas', JSON.stringify(csvBobinas));
+    salvarNaSessao('lidas_bobinas', JSON.stringify(bobinasLidas));
+    salvarNaSessao('sessao_id', sessaoId || null);
+    salvarNaSessao('tipo_contagem', tipoContagem || null);
   }, [csvBobinas, bobinasLidas, sessaoId, tipoContagem]);
+
+  // Aparelho atualizado no meio de uma contagem iniciada sem rede (id "offline-<timestamp>"):
+  // troca pelo uuid usado na fila, para exclusões e novas leituras usarem a mesma sessão
+  useEffect(() => {
+    if (sessaoId && String(sessaoId).startsWith('offline-')) {
+      migrarSessaoLegada(sessaoId, crachaLogado).then(setSessaoId).catch(err => console.error(err));
+    }
+  }, [sessaoId, crachaLogado]);
 
   useEffect(() => {
     if (crachaLogado && nomeLogado) {
       sessionStorage.setItem('usuario_cracha', crachaLogado);
       sessionStorage.setItem('usuario_nome', nomeLogado);
       sessionStorage.setItem('usuario_is_admin', String(isAdmin));
+      salvarNaSessao('usuario_perfil', JSON.stringify(perfilLogado));
     } else {
       sessionStorage.removeItem('usuario_cracha');
       sessionStorage.removeItem('usuario_nome');
       sessionStorage.removeItem('usuario_is_admin');
+      sessionStorage.removeItem('usuario_perfil');
     }
-  }, [crachaLogado, nomeLogado, isAdmin]);
+  }, [crachaLogado, nomeLogado, isAdmin, perfilLogado]);
 
   useEffect(() => {
     if (etapaInventario === 'BIPANDO' && !modal.show && !showConferencia && !usandoCamera) {
@@ -212,129 +256,389 @@ function App() {
     });
   }
 
-  const fazerLogin = async () => {
-    if (!inputCracha.trim()) { abrirAlerta('Atenção', 'Insira o número do seu crachá.'); return; }
+  // Confere o crachá no Supabase e entra. Usado pela tela de crachá e pelo login único do Portal.
+  const entrarComCracha = async (cracha) => {
     setCarregandoLogin(true);
+    const entrar = (dados) => {
+      setCrachaLogado(cracha);
+      setNomeLogado(dados.nome_completo || 'Operador');
+      setIsAdmin(!!dados.admin);
+      setPerfilLogado({ setor: dados.setor || null, unidade: dados.unidade ?? null });
+    };
+    // Crachás que já entraram neste aparelho: permite iniciar a contagem mesmo sem rede
+    const cacheLogins = lerCacheLocal('cache_logins') || {};
     try {
-      const { data, error } = await supabase.from('crachas').select('id, nome_completo, admin').eq('id', inputCracha.trim()).single();
-      if (error) { abrirAlerta('Acesso Negado', 'Crachá não encontrado.'); setCarregandoLogin(false); return; }
-      if (data) { setCrachaLogado(inputCracha.trim()); setNomeLogado(data.nome_completo || 'Operador'); setIsAdmin(!!data.admin); }
+      const { data, error } = await supabase.from('crachas').select('id, nome_completo, admin, setor, unidade').eq('id', cracha).maybeSingle().abortSignal(sinalTimeout(8000));
+      if (data) {
+        entrar(data);
+        gravarCacheLocal('cache_logins', { ...cacheLogins, [cracha]: { nome_completo: data.nome_completo, admin: data.admin, setor: data.setor, unidade: data.unidade } });
+        return true;
+      } else if (!error || ehErroPermanente(error)) {
+        abrirAlerta('Acesso Negado', 'Crachá não encontrado.');
+      } else if (cacheLogins[cracha]) {
+        entrar(cacheLogins[cracha]);
+        return true;
+      } else {
+        abrirAlerta('Sem conexão', 'Não foi possível validar o crachá no servidor. Verifique a conexão e tente novamente.');
+      }
     } catch (err) {
-      abrirAlerta('Erro', 'Não foi conectar ao banco Supabase.');
+      console.error(err);
+      abrirAlerta('Erro', 'Não foi possível conectar ao banco Supabase.');
     } finally { setCarregandoLogin(false); }
+    return false;
   }
 
+  const fazerLogin = async () => {
+    if (!inputCracha.trim()) { abrirAlerta('Atenção', 'Insira o número do seu crachá.'); return; }
+    await entrarComCracha(inputCracha.trim());
+  }
+
+  const limparOperador = () => {
+    setCrachaLogado(''); setNomeLogado(''); setInputCracha(''); setIsAdmin(false); setPerfilLogado({ setor: null, unidade: null });
+  };
+
+  // Login único: com rede, o operador é quem entrou no Portal de Acesso (mesmo endereço, pelo Nginx).
+  // Um login do Portal que não é crachá (ex.: administrador) descarta o operador anterior e a tela de crachá aparece.
+  useEffect(() => {
+    if (!navigator.onLine) return undefined;
+    let cancelado = false;
+    (async () => {
+      try {
+        const resposta = await fetch('/acesso/api/eu', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } });
+        if (!resposta.ok) return;
+        const eu = await resposta.json();
+        const crachaPortal = String(eu?.usuario || '').trim();
+        if (cancelado || !crachaPortal || crachaPortal === sessionStorage.getItem('usuario_cracha')) return;
+        if (/^\d+$/.test(crachaPortal)) await entrarComCracha(crachaPortal);
+        else limparOperador();
+      } catch {
+        // Sem Portal (ex.: desenvolvimento) ou rede instável: segue com o login por crachá
+      } finally {
+        if (!cancelado) setVerificandoPortal(false);
+      }
+    })();
+    return () => { cancelado = true; };
+    // Só na abertura do app; entrarComCracha e limparOperador só mexem em estado
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Com rede, Sair encerra também o login do Portal; senão o login único entraria de novo na mesma hora.
+  // Offline, só volta para a tela de crachá (o inventário do aparelho é mantido).
   const fazerLogout = () => {
-    abrirConfirmacao('Sair', 'Deseja sair? Seus dados continuarão na tela.', () => {
-      setCrachaLogado(''); setNomeLogado(''); setInputCracha(''); setIsAdmin(false);
+    abrirConfirmacao('Sair', 'Deseja sair? Seus dados continuarão na tela.', async () => {
+      limparOperador();
+      if (!navigator.onLine) return;
+      try {
+        const resposta = await fetch('/acesso/api/sair', { method: 'POST', credentials: 'same-origin', headers: { 'X-Portal': '1' } });
+        if (resposta.ok) window.location.href = `/acesso/entrar?volta=${encodeURIComponent(window.location.pathname)}`;
+      } catch {
+        // Sem Portal: a tela de crachá já aparece
+      }
     });
   }
 
   const garantirSessao = async () => {
-    if (sessaoId) {
-      if (!navigator.onLine) {
-        return sessaoId;
-      }
-      try {
-        const { data } = await supabase.from('sessoes_inventario').select('id').eq('id', sessaoId).maybeSingle();
-        if (data) return sessaoId;
-      } catch (err) {
-        console.warn("Falha de rede ao verificar sessao, usando sessaoId local:", err);
-        return sessaoId;
-      }
-    }
-    
-    if (!navigator.onLine) {
-      const idOffline = `offline-${Date.now()}`;
-      setSessaoId(idOffline);
-      sessionStorage.setItem('sessao_id', idOffline);
-      return idOffline;
+    let idAtual = sessaoId;
+
+    // Ids "offline-<timestamp>" de versões anteriores nunca seriam aceitos pelo banco (coluna uuid)
+    if (idAtual && String(idAtual).startsWith('offline-')) {
+      idAtual = await migrarSessaoLegada(idAtual, crachaLogado);
+      setSessaoId(idAtual);
     }
 
-    const { data, error } = await supabase.from('sessoes_inventario').insert([{ cracha_importacao: crachaLogado, status: 'Em andamento' }]).select('id').single();
-    if (error) throw error;
-    setSessaoId(data.id);
-    return data.id;
+    if (idAtual) {
+      if (sessoesConfirmadas.current.has(idAtual) || !navigator.onLine || await sessaoPendenteLocal(idAtual)) {
+        return idAtual;
+      }
+      const { data, error } = await supabase.from('sessoes_inventario').select('id').eq('id', idAtual).maybeSingle().abortSignal(sinalTimeout(5000));
+      if (data) {
+        sessoesConfirmadas.current.add(idAtual);
+        return idAtual;
+      }
+      if (error) {
+        // Rede instável: segue com a sessão local; a sincronização resolve depois
+        console.warn("Falha ao verificar sessao, usando sessaoId local:", error.message);
+        return idAtual;
+      }
+      // A sessão não existe mais no servidor: abre uma nova
+    }
+
+    // A sessão nasce no aparelho (uuid) e vai ao servidor na sincronização: funciona com ou sem rede
+    const novoId = await registrarSessaoLocal(crachaLogado);
+    setSessaoId(novoId);
+    return novoId;
   }
 
   const limparValorParaBanco = (val) => (val === undefined || val === null || String(val).trim() === '') ? null : String(val).trim();
+  // Colunas numéricas (double precision): valor inválido vira null em vez de rejeitar o lote inteiro
   const limparNumeroParaBanco = (val) => {
     if (val === undefined || val === null || String(val).trim() === '') return null;
     let formatado = String(val).trim();
     if (formatado.includes(',')) formatado = formatado.replace(/\./g, '').replace(',', '.');
-    return formatado;
+    const numero = Number(formatado);
+    return Number.isFinite(numero) ? numero : null;
+  }
+  // Colunas bigint (ex.: ordem_venda)
+  const limparInteiroParaBanco = (val) => {
+    const limpo = limparValorParaBanco(val);
+    return limpo && /^\d+$/.test(limpo) ? limpo : null;
   }
 
-  const formatarEnderecoSAP = (bobina) => {
-    if (!bobina) return '-';
-    if (bobina.posicao && !bobina.deposito) {
-        return `Posição: ${bobina.posicao}`;
+  const enderecoSAP = (bobina) => formatarEnderecoSAP(bobina, depositosDisponiveis);
+
+  // Planilha carregada neste aparelho, no formato de `bobinas_sap` (vale para a conferência mesmo
+  // quando a importação não chegou ao servidor)
+  const baseSapLocal = () => (csvBobinas || []).map(c => ({
+    lote: c.lote || c.codigo, romaneio: c.romaneio, material: c.material, descricao: c.descricao,
+    peso_liquido: c.peso_liquido, largura: c.largura, espessura: c.espessura, ordem_producao: c.ordem_producao,
+    ordem_venda: c.ordem_venda, cliente: c.cliente, nome_cliente: c.nome_cliente, deposito: c.deposito,
+    gondola: c.gondola, posicao: c.posicao, filial: c.filial, agrupador: c.agrupador,
+  }));
+
+  // CONFERÊNCIA: carrega as leituras do período (paginado, sem o teto de 10 mil linhas do Supabase)
+  // e o SAP só das bobinas lidas (para o status de cada leitura). As pendências vêm depois, à parte.
+  const carregarConferencia = async (dias = periodoConferencia) => {
+    setCarregandoAcao(true);
+    setErroConferencia('');
+    try {
+      const inicioPeriodo = new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
+
+      const [lidas, crachasList] = await Promise.all([
+        buscarTodasPaginas(() => supabase.from('bobinas_lidas').select('*')
+          .gte('data_leitura', inicioPeriodo)
+          .order('data_leitura', { ascending: true }).order('id', { ascending: true })),
+        buscarTodasPaginas(() => supabase.from('crachas').select('id, nome_completo, admin, setor, unidade').order('id', { ascending: true })),
+      ]);
+
+      const lotesLidos = lidas.flatMap(b => b.lote ? [b.lote, String(b.lote).toUpperCase()] : []);
+      const sapDasLeituras = await buscarPorValores(lotes => supabase.from('bobinas_sap').select('*').in('lote', lotes).order('id', { ascending: true }), lotesLidos);
+
+      // Data de cada importação: se o lote foi importado mais de uma vez, vale a mais recente
+      const idsSessoesSap = [...new Set(sapDasLeituras.map(s => s.sessao_id).filter(Boolean))];
+      const sessoesSap = await buscarPorValores(ids => supabase.from('sessoes_inventario').select('id, data_importacao').in('id', ids).order('id', { ascending: true }), idsSessoesSap, { tamanhoLote: 40 });
+      const momentoPorSessao = new Map(sessoesSap.map(s => [s.id, new Date(s.data_importacao).getTime()]));
+
+      const sapPorChave = new Map();
+      sapDasLeituras.forEach(s => {
+        const momento = momentoPorSessao.get(s.sessao_id) || 0;
+        chavesDaBobina(s.lote, s.romaneio).forEach(k => {
+          const atual = sapPorChave.get(k);
+          if (!atual || momento >= atual._momento) sapPorChave.set(k, { ...s, _momento: momento });
+        });
+      });
+      baseSapLocal().forEach(s => chavesDaBobina(s.lote, s.romaneio).forEach(k => {
+        if (!sapPorChave.has(k)) sapPorChave.set(k, { ...s, _momento: 0 });
+      }));
+
+      const buscarSap = (b) => {
+        if (b.romaneio) {
+          const porRomaneio = sapPorChave.get(chaveBobina(null, b.romaneio));
+          if (porRomaneio) return porRomaneio;
+        }
+        return b.lote ? sapPorChave.get(chaveBobina(b.lote, null)) : undefined;
+      };
+
+      const crachaMap = new Map();
+      crachasList.forEach(c => crachaMap.set(String(c.id), c));
+      const nomeRotaPorId = new Map(rotasDisponiveis.map(r => [String(r.id), r.rota]));
+
+      const listaGlobal = lidas.map(b => {
+        const cId = String(b.cracha_leitura || '');
+        const dono = crachaMap.get(cId);
+        const nomeDono = dono ? dono.nome_completo : (cId ? `Crachá ${cId}` : 'Não identificado');
+        const dadosSap = buscarSap(b);
+
+        const dataOriginal = b.data_leitura || b.created_at || b.data_hora || b.data_registro;
+        let dataFormatada = '-';
+        let dataIsoDia = '';
+        let dataDiaFmt = '-';
+        let horaFormatada = '-';
+        let timestampNum = 0;
+
+        if (dataOriginal) {
+          const d = new Date(dataOriginal);
+          if (!isNaN(d.getTime())) {
+            timestampNum = d.getTime();
+            dataIsoDia = dataIsoLocal(d);
+            dataDiaFmt = dataIsoDia.split('-').reverse().join('/');
+            horaFormatada = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            dataFormatada = `${dataDiaFmt} ${d.toLocaleTimeString('pt-BR')}`;
+          } else {
+            dataFormatada = String(dataOriginal);
+          }
+        }
+
+        const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
+        const nomeRota = nomeRotaPorId.get(String(b.rotas)) || b.rotas || '-';
+        const { status, tipo } = calcularStatusConciliacao(b, dadosSap, nomeRota, depositosDisponiveis);
+
+        return {
+          id: b.id,
+          // Mesma bobina lida mais de uma vez (outro aparelho, outro operador, após "Limpar tela")
+          chave: chaveBobina(b.lote || b.romaneio, null),
+          codigo: b.lote || b.romaneio,
+          dataHora: dataFormatada,
+          dataIso: dataIsoDia,
+          dataDiaFmt: dataDiaFmt,
+          horaFmt: horaFormatada,
+          timestamp: timestampNum,
+          sessao_id: b.sessao_id,
+          cracha: b.cracha_leitura,
+          nome: nomeDono,
+          // Unidade/setor de quem contou (cadastro do crachá) — independente da filial da bobina
+          unidadeOperador: dono && dono.unidade != null ? String(dono.unidade) : '-',
+          setorOperador: dono?.setor || '-',
+          lote: b.lote,
+          romaneio: b.romaneio,
+          filial: filialFinal,
+          deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
+          endereco_lido: b.endereco_lido || '-',
+          endereco_sap: enderecoSAP(dadosSap),
+          agrupador: dadosSap ? (dadosSap.agrupador || '-') : '-',
+          material: dadosSap ? (dadosSap.material || '-') : '-',
+          descricao: dadosSap ? (dadosSap.descricao || '-') : '-',
+          peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
+          largura: dadosSap ? (dadosSap.largura || '-') : '-',
+          espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
+          ordem_producao: dadosSap ? (dadosSap.ordem_producao || '-') : '-',
+          ordem_venda: dadosSap ? (dadosSap.ordem_venda || '-') : '-',
+          cliente: dadosSap ? (dadosSap.cliente || '-') : '-',
+          nome_cliente: dadosSap ? (dadosSap.nome_cliente || '-') : '-',
+          rota: nomeRota,
+          status,
+          tipo
+        };
+      });
+
+      setLeiturasGlobais(listaGlobal);
+      // Pendências em segundo plano: a tabela de leituras já pode ser usada
+      carregarPendentes(periodoPendentes, listaGlobal);
+    } catch (err) {
+      console.error(err);
+      setErroConferencia(`Não foi possível carregar a conferência: ${err?.message || err}`);
+    } finally {
+      setCarregandoAcao(false);
     }
-    if (bobina.gondola || bobina.posicao) {
-      return `Depósito: ${bobina.deposito || '-'} | G: ${bobina.gondola || '-'} | P: ${bobina.posicao || '-'}`;
+  };
+
+  // PENDENTES SAP: bobinas das bases importadas no período que ninguém bipou.
+  // Uma base pode ter milhares de linhas e o mesmo lote costuma ser importado várias vezes,
+  // então a janela é curta e repetições entre bases diferentes são descartadas.
+  const carregarPendentes = async (diasBase = periodoPendentes, leituras = leiturasGlobais) => {
+    const carga = ++cargaPendentesAtual.current;
+    setCarregandoPendentes(true);
+    try {
+      const inicio = new Date(Date.now() - diasBase * 24 * 60 * 60 * 1000).toISOString();
+      const sessoes = await buscarTodasPaginas(() => supabase.from('sessoes_inventario').select('id, data_importacao, cracha_importacao')
+        .gte('data_importacao', inicio).order('id', { ascending: true }));
+      const sapDoPeriodo = await buscarPorValores(ids => supabase.from('bobinas_sap').select('*').in('sessao_id', ids).order('id', { ascending: true }), sessoes.map(s => s.id), { tamanhoLote: 40 });
+      if (carga !== cargaPendentesAtual.current) return; // o usuário já pediu outra janela
+
+      const sapLocal = baseSapLocal();
+      setLinhasBaseSapPeriodo(sapDoPeriodo.length + sapLocal.length);
+      const sessaoPorId = new Map(sessoes.map(s => [s.id, s]));
+      const chavesLidas = new Set(leituras.flatMap(l => chavesDaBobina(l.lote, l.romaneio)));
+      const momentoDe = (s) => {
+        const sessao = sessaoPorId.get(s.sessao_id);
+        return sessao ? new Date(sessao.data_importacao).getTime() : 0;
+      };
+
+      // O mesmo lote/romaneio importado em várias bases conta só pela importação mais recente.
+      // Dentro dessa base, TODAS as linhas continuam (ex.: as várias linhas de um romaneio),
+      // exatamente como a planilha veio.
+      const baseMaisRecente = new Map();
+      sapDoPeriodo.forEach(s => {
+        const chave = chavesDaBobina(s.lote, s.romaneio)[0];
+        if (!chave) return;
+        const momento = momentoDe(s);
+        const atual = baseMaisRecente.get(chave);
+        if (!atual || momento > atual.momento) baseMaisRecente.set(chave, { momento, sessaoId: s.sessao_id });
+      });
+
+      const montarPendente = (s, momento) => {
+        const dataImport = momento ? new Date(momento) : new Date();
+        return {
+          chave: chavesDaBobina(s.lote, s.romaneio)[0],
+          codigo: s.lote || s.romaneio,
+          dataHora: '-',
+          dataIso: '',
+          dataDiaFmt: '-',
+          dataImportIso: dataIsoLocal(dataImport),
+          timestampImport: dataImport.getTime(),
+          cracha: '-',
+          nome: '-',
+          lote: s.lote,
+          romaneio: s.romaneio,
+          filial: s.filial || determinarFilial(s.lote) || '-',
+          deposito: s.deposito || '-',
+          endereco_lido: '-',
+          endereco_sap: enderecoSAP(s),
+          agrupador: s.agrupador || '-',
+          material: s.material || '-',
+          descricao: s.descricao || '-',
+          peso_liquido: s.peso_liquido || '-',
+          largura: s.largura || '-',
+          espessura: s.espessura || '-',
+          ordem_producao: s.ordem_producao || '-',
+          ordem_venda: s.ordem_venda || '-',
+          cliente: s.cliente || '-',
+          nome_cliente: s.nome_cliente || '-',
+          rota: '-',
+          status: 'Faltando (Não Bipada)',
+          tipo: 'faltando'
+        };
+      };
+      const foiLida = (s) => chavesDaBobina(s.lote, s.romaneio).some(k => chavesLidas.has(k));
+
+      const pendentes = sapDoPeriodo
+        .filter(s => {
+          const chave = chavesDaBobina(s.lote, s.romaneio)[0];
+          return chave && !foiLida(s) && baseMaisRecente.get(chave)?.sessaoId === s.sessao_id;
+        })
+        .map(s => montarPendente(s, momentoDe(s)));
+      // Planilha deste aparelho: só o que não veio do servidor (ex.: importação que não foi salva)
+      sapLocal
+        .filter(s => {
+          const chave = chavesDaBobina(s.lote, s.romaneio)[0];
+          return chave && !foiLida(s) && !baseMaisRecente.has(chave);
+        })
+        .forEach(s => pendentes.push(montarPendente(s, null)));
+
+      setBobinasFaltandoSap(pendentes.sort((a, b) => b.timestampImport - a.timestampImport));
+    } catch (err) {
+      console.error(err);
+      if (carga === cargaPendentesAtual.current) setErroConferencia(`Não foi possível carregar as pendências SAP: ${err?.message || err}`);
+    } finally {
+      if (carga === cargaPendentesAtual.current) setCarregandoPendentes(false);
     }
-    const depInfo = depositosDisponiveis.find(d => d.id === bobina.deposito);
-    if (depInfo && !depInfo.requerEndereco) {
-      return `Depósito: ${bobina.deposito}`;
-    }
-    return `Depósito: ${bobina.deposito || '-'}`;
   };
 
   const abrirConferenciaAdmin = async () => {
     setShowConferencia(true);
     setPaginaAtual(1);
-    setCarregandoAcao(true);
-    try {
-      const { data: leituras, error: erroLeituras } = await supabase.from('bobinas_lidas').select('*');
-      const { data: crachas } = await supabase.from('crachas').select('id, nome_completo');
-      const { data: sapBanco } = await supabase.from('bobinas_sap').select('*');
+    setConferenciaStatusFilter('todos');
+    const hojeIso = obterDataHojeIso();
 
-      if (erroLeituras) throw erroLeituras;
+    if (!isAdmin) {
+      setConferenciaTab('leituras');
+      setConferenciaFilters({ lote: '', data_leitura: hojeIso, filial: '', deposito: '', operador: String(crachaLogado), unidade_operador: '' });
+    } else {
+      setConferenciaTab('inventarios');
+      setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '', operador: '', unidade_operador: '' });
+    }
+    await carregarConferencia(periodoConferencia);
+  };
 
-      if (leituras) {
-        const listaGlobal = leituras.map(b => {
-          const dono = crachas?.find(c => c.id === b.cracha_leitura);
-          const dadosSap = sapBanco?.find(s => {
-            if (b.romaneio && b.romaneio !== '-') {
-              return s.romaneio === b.romaneio;
-            }
-            return s.lote === b.lote;
-          }) || csvBobinas.find(c => {
-            if (b.romaneio && b.romaneio !== '-') {
-              return c.romaneio === b.romaneio;
-            }
-            return c.codigo === b.lote;
-          });
-          const dataOriginal = b.created_at || b.data_hora || b.data_leitura || b.data_registro;
-          let dataFormatada = '-';
-          if (dataOriginal) {
-            const d = new Date(dataOriginal);
-            if (!isNaN(d.getTime())) {
-              dataFormatada = `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR')}`;
-            } else {
-              dataFormatada = dataOriginal;
-            }
-          }
-          const filialFinal = b.filial || (dadosSap ? dadosSap.filial : null) || determinarFilial(b.lote) || '-';
+  const alterarPeriodoConferencia = (dias) => {
+    setPeriodoConferencia(dias);
+    setPaginaAtual(1);
+    carregarConferencia(dias);
+  };
 
-          const nomeRota = rotasDisponiveis.find(r => String(r.id) === String(b.rotas))?.rota || b.rotas || '-';
-
-          return {
-            codigo: b.lote, dataHora: dataFormatada, cracha: b.cracha_leitura, nome: dono ? dono.nome_completo : b.cracha_leitura,
-            lote: b.lote, romaneio: b.romaneio,
-            filial: filialFinal, deposito: b.deposito || (dadosSap ? (dadosSap.deposito || '-') : '-'),
-            endereco_lido: b.endereco_lido || '-', endereco_sap: formatarEnderecoSAP(dadosSap),
-            agrupador: dadosSap ? (dadosSap.agrupador || '-') : '-', material: dadosSap ? (dadosSap.material || '-') : '-',
-            descricao: dadosSap ? (dadosSap.descricao || '-') : '-', peso_liquido: dadosSap ? (dadosSap.peso_liquido || '-') : '-',
-            largura: dadosSap ? (dadosSap.largura || '-') : '-', espessura: dadosSap ? (dadosSap.espessura || '-') : '-',
-            ordem_producao: dadosSap ? (dadosSap.ordem_producao || '-') : '-', ordem_venda: dadosSap ? (dadosSap.ordem_venda || '-') : '-',
-            cliente: dadosSap ? (dadosSap.cliente || '-') : '-', nome_cliente: dadosSap ? (dadosSap.nome_cliente || '-') : '-',
-            rota: nomeRota
-          };
-        });
-        setLeiturasGlobais(listaGlobal);
-      }
-    } catch (err) { console.error(err); } finally { setCarregandoAcao(false); }
+  const alterarPeriodoPendentes = (dias) => {
+    setPeriodoPendentes(dias);
+    setPaginaAtual(1);
+    carregarPendentes(dias);
   };
 
   const finalizarImportacao = async (linhas, idxCabecalho, separator, headersLimpos, modoEscolhido) => {
@@ -447,21 +751,46 @@ function App() {
         descricao: limparValorParaBanco(item.descricao), 
         posicao: limparValorParaBanco(item.posicao),
         ordem_producao: limparValorParaBanco(item.ordem_producao),
-        ordem_venda: limparValorParaBanco(item.ordem_venda),
+        ordem_venda: limparInteiroParaBanco(item.ordem_venda),
         agrupador: limparValorParaBanco(item.agrupador),
         largura: limparNumeroParaBanco(item.largura),
         espessura: limparNumeroParaBanco(item.espessura),
         deposito: limparValorParaBanco(item.deposito),
         gondola: limparValorParaBanco(item.gondola),
-        filial: limparValorParaBanco(item.filial),
-        rota: rotaAtual || null 
+        filial: limparValorParaBanco(item.filial)
       }));
 
-      const { error: erroSap } = await supabase.from('bobinas_sap').insert(dadosParaBanco);
-      if (erroSap) console.warn("Aviso ao salvar base SAP:", erroSap);
-
+      // A planilha vale neste aparelho mesmo se o servidor falhar; o operador precisa saber se ela
+      // chegou ao banco, porque a conferência dos administradores depende disso.
       setCsvBobinas(codigosExtraidos);
-      abrirAlerta('Sucesso', `Planilha importada! (${codigosExtraidos.length} itens processados como ${modoEscolhido === 'ROMANEIO' ? 'Romaneio' : 'Lote'})`);
+      const resumoImportacao = `${codigosExtraidos.length} itens processados como ${modoEscolhido === 'ROMANEIO' ? 'Romaneio' : 'Lote'}`;
+
+      let falhaServidor = null;
+      if (!navigator.onLine) {
+        falhaServidor = 'sem conexão';
+      } else {
+        const sessoes = await enviarSessoesPendentes();
+        if (!sessoes.ok) {
+          falhaServidor = sessoes.error?.message || 'não foi possível registrar a sessão';
+        } else {
+          const resultado = await salvarBaseSap(dadosParaBanco);
+          if (resultado.colunasIgnoradas.length > 0) {
+            console.warn(`[SAP] Colunas ainda não criadas no banco e ignoradas: ${resultado.colunasIgnoradas.join(', ')}`);
+          }
+          if (resultado.error) {
+            console.error('Erro ao salvar base SAP:', resultado.error);
+            falhaServidor = `${resultado.salvas} de ${resultado.total} salvos — ${resultado.error.message || resultado.error.code}`;
+          }
+        }
+      }
+
+      if (falhaServidor) {
+        abrirAlerta('Planilha carregada só neste aparelho', `${resumoImportacao}.
+
+A base SAP NÃO foi salva no servidor (${falhaServidor}). A contagem neste aparelho funciona normalmente, mas a Conferência dos administradores não terá esta base. Importe de novo quando houver conexão.`);
+      } else {
+        abrirAlerta('Sucesso', `Planilha importada! (${resumoImportacao})`);
+      }
 
     } catch (erro) {
       console.error(erro); abrirAlerta('Erro no Arquivo', erro.message || "Falha ao processar o CSV.");
@@ -557,132 +886,8 @@ function App() {
     reader.readAsText(file, 'ISO-8859-1');
   };
 
-  const processarEntradaMassa = (textoEntrada) => {
-    let itensExtraidos = [];
-    if (!textoEntrada) return itensExtraidos;
-
-    const linhas = textoEntrada.split(/[\r\n]+/);
-
-    for (let linha of linhas) {
-      linha = linha.trim().toUpperCase();
-      if (!linha) continue;
-
-      // Se a contagem ativa for LOTE:
-      if (tipoContagem === 'LOTE') {
-        // 1. Se a linha contiver a tag de lotes VL\d+LT (canto inferior direito)
-        const matchVL = linha.match(/VL\d+LT/i);
-        if (matchVL) {
-          const indexFimTag = matchVL.index + matchVL[0].length;
-          const restante = linha.substring(indexFimTag);
-          
-          // Quebra os lotes pelo espaço ou outros delimitadores comuns
-          const partesInternas = restante.split(/[\s;]+/);
-          partesInternas.forEach(p => {
-            let palavraLote = p.trim();
-            if (!palavraLote) return;
-
-            // Se a palavra contiver a palavra 'KG' (ex: VA13131815KG126,84), pega apenas o que vem antes de 'KG'
-            if (/KG/i.test(palavraLote)) {
-              const partesKG = palavraLote.split(/KG/i);
-              palavraLote = partesKG[0].trim();
-            }
-
-            const limpo = removerZeros(palavraLote);
-            // Lote físico sempre começa com letra e tem comprimento de lote típico (6 a 12 caracteres)
-            if (limpo && /^[A-Z]/i.test(limpo.charAt(0)) && limpo.length >= 6 && limpo.length <= 12) {
-              itensExtraidos.push({ tipo: 'lote', valor: limpo });
-            }
-          });
-          continue;
-        }
-
-        // 2. Se a linha NÃO contiver a tag VL\d+LT
-        const palavras = linha.split(/[\s,;\-\/]+/).filter(Boolean);
-        
-        // Se tiver múltiplos termos sem a tag VL\d+LT (ex: cabeçalho MA1003OP500895600), ignoramos inteiramente
-        if (palavras.length > 1) {
-          continue;
-        }
-
-        if (palavras.length === 1) {
-          const termoUnico = palavras[0];
-          // Descarta se contiver OP (Ordem de Produção) ou se for muito longo para ser lote (ex: cabeçalhos colados)
-          if (termoUnico.includes('OP') || termoUnico.length > 12) {
-            continue;
-          }
-
-          const valorLimpo = removerZeros(termoUnico);
-          if (!valorLimpo) continue;
-
-          const isPrefixoAG = termoUnico.startsWith('AG');
-          const agNumeroLimpo = isPrefixoAG ? removerZeros(termoUnico.substring(2)) : valorLimpo;
-
-          // Se for um identificador de agrupador e o SAP estiver carregado, expande seus lotes
-          const itemSAPAgr = csvBobinas.find(c => removerZeros(c.agrupador) === agNumeroLimpo);
-
-          if (itemSAPAgr) {
-            const bobinasDoAgrupador = csvBobinas.filter(c => removerZeros(c.agrupador) === agNumeroLimpo);
-            bobinasDoAgrupador.forEach(b => {
-              if (b.lote) {
-                itensExtraidos.push({ tipo: 'lote', valor: b.lote });
-              }
-            });
-          } else {
-            // Se não estiver no SAP ou for Sobra, aceita apenas se começar com LETRA e não for o termo com prefixo AG puro
-            const comecaComLetra = /^[A-Z]/i.test(valorLimpo.charAt(0));
-            if (comecaComLetra && !isPrefixoAG) {
-              itensExtraidos.push({ tipo: 'lote', valor: valorLimpo });
-            }
-          }
-        }
-      }
-
-      // Se a contagem ativa for ROMANEIO:
-      if (tipoContagem === 'ROMANEIO') {
-        // Se contiver a tag de lotes VL\d+LT (o agrupador do canto inferior), ignoramos por completo no Romaneio
-        if (/VL\d+LT/i.test(linha)) {
-          continue;
-        }
-
-        // 1. Se contiver a tag (7) e (8) ou apenas a tag (7) com dígitos subsequentes
-        if (linha.includes('(7)')) {
-          const regexRom = /\(7\)(\d+)/i;
-          const matchRom = regexRom.exec(linha);
-          if (matchRom) {
-            const valorRom = matchRom[1].trim();
-            const limpo = removerZeros(valorRom);
-            if (limpo && /^\d+$/.test(limpo)) {
-              itensExtraidos.push({ tipo: 'romaneio', valor: limpo });
-            }
-          }
-          continue;
-        }
-
-        // 2. Se for um termo único inteiramente numérico (ex: romaneio digitado diretamente ou bipado)
-        const palavras = linha.split(/[\s,;\-\/]+/).filter(Boolean);
-        if (palavras.length === 1) {
-          const termoUnico = palavras[0];
-          const valorLimpo = removerZeros(termoUnico);
-          if (valorLimpo && /^\d+$/.test(valorLimpo) && valorLimpo.length >= 6 && valorLimpo.length <= 12) {
-            itensExtraidos.push({ tipo: 'romaneio', valor: valorLimpo });
-          }
-        }
-      }
-    }
-    
-    // Garantir unicidade
-    const unicos = [];
-    const chaves = new Set();
-    itensExtraidos.forEach(item => {
-        const chave = `${item.tipo}-${item.valor}`;
-        if (!chaves.has(chave)) {
-            chaves.add(chave);
-            unicos.push(item);
-        }
-    });
-
-    return unicos;
-  };
+  // Regras de interpretação dos códigos em src/lib/inventario.js
+  const processarEntradaMassa = (textoEntrada) => interpretarEntrada(textoEntrada, tipoContagem, csvBobinas);
 
   const adicionarBobina = async (codigoCopia = null) => {
     const textoLido = (typeof codigoCopia === 'string' ? codigoCopia : codigo).trim();
@@ -757,7 +962,8 @@ function App() {
             avisos.push(`⚠️ O item ${identificadorFinal} já foi lido.`); continue;
         }
 
-        const filialMapeada = determinarFilial(identificadorFinal) || (bobinaSAP ? bobinaSAP.filial : null);
+        // Filial do SAP tem prioridade: determinarFilial() sempre devolve algo (padrão 1001 - Videira)
+        const filialMapeada = (bobinaSAP ? bobinaSAP.filial : null) || determinarFilial(identificadorFinal);
         const depositoAInserir = modoInventario === 'COM_ENDERECO' ? depositoAtual : (bobinaSAP ? bobinaSAP.deposito : null);
 
         let enderecoAInserir = null;
@@ -805,7 +1011,7 @@ function App() {
           // OFFLINE-FIRST: salva localmente primeiro (nunca falha), depois tenta sincronizar
           const agora = Date.now();
           await db.leituras_pendentes.bulkAdd(
-            insercoesNoBanco.map(i => ({ ...i, _status: 'pendente', _criado_em: agora }))
+            insercoesNoBanco.map(i => ({ ...i, uuid: gerarUuid(), _status: 'pendente', _criado_em: agora }))
           );
           setBobinasLidas(listaAtualizada);
           // Tenta sincronizar em background (não bloqueia nem exibe erro se offline)
@@ -829,7 +1035,7 @@ function App() {
 
   const processarLoteDrone = async (arrayDeTextosLidos) => {
     setUsandoDrone(false);
-    if (arrayDeTextosLidos.length === 0) { abrirAlerta('Resultado', 'Nenhum código lido.'); return; }
+    if (!arrayDeTextosLidos || arrayDeTextosLidos.length === 0) { abrirAlerta('Resultado', 'Nenhum código lido.'); return; }
 
     setCarregandoAcao(true);
     let lotesFormatados = [];
@@ -866,7 +1072,7 @@ function App() {
       if (modoInventario === 'COM_ENDERECO') {
         const depInfo = depositosDisponiveis.find(d => d.id === depositoAtual);
         if (depInfo && depInfo.requerEndereco) {
-          enderecoAInserir = `Depósito: ${depositoAtual} | G: ${gondolaAtual} | P: ${gavetaAtual}`;
+          enderecoAInserir = `Depósito: ${depositoAtual}${gondolaAtual.trim() ? ` | G: ${gondolaAtual}` : ''} | P: ${gavetaAtual}`;
         } else {
           enderecoAInserir = `Depósito: ${depositoAtual}`;
         }
@@ -877,16 +1083,16 @@ function App() {
         
         const bobinaSAP = csvBobinas.find(c => {
           if (tipoContagem === 'ROMANEIO') {
-            return c.romaneio === lote;
+            return limparCodigo(c.romaneio) === lote;
           } else {
-            return c.codigo === lote;
+            return limparCodigo(c.codigo) === lote;
           }
         });
         const identificadorFinal = bobinaSAP ? bobinaSAP.codigo : lote;
 
         if (listaAtualizada.some(b => b.codigo === identificadorFinal)) continue;
         
-        const filialMapeada = determinarFilial(identificadorFinal) || (bobinaSAP ? bobinaSAP.filial : null);
+        const filialMapeada = (bobinaSAP ? bobinaSAP.filial : null) || determinarFilial(identificadorFinal);
         const depositoAInserir = modoInventario === 'COM_ENDERECO' ? depositoAtual : (bobinaSAP ? bobinaSAP.deposito : null);
 
         listaAtualizada = [{
@@ -910,28 +1116,40 @@ function App() {
         // OFFLINE-FIRST: salva localmente primeiro, sincroniza em background
         const agora = Date.now();
         await db.leituras_pendentes.bulkAdd(
-          insercoesNoBanco.map(i => ({ ...i, _status: 'pendente', _criado_em: agora }))
+          insercoesNoBanco.map(i => ({ ...i, uuid: gerarUuid(), _status: 'pendente', _criado_em: agora }))
         );
         syncNow();
       }
       setBobinasLidas(listaAtualizada);
-      abrirAlerta('Missão do Drone Concluída!', `Processados e inseridos ${insercoesNoBanco.length} novos itens.`);
-    } catch (erro) { abrirAlerta('Erro', 'Ocorreu um problema ao salvar os dados do drone.'); } finally { setCarregandoAcao(false); }
+      abrirAlerta('Missão do Drone Concluída!', `Processados e inseridos ${insercoesNoBanco.length} novos itens no inventário.`);
+    } catch (erro) { console.error(erro); abrirAlerta('Erro', 'Ocorreu um problema ao salvar os dados do drone.'); } finally { setCarregandoAcao(false); }
   };
 
   const removerBobina = async (codigoParaRemover) => {
     setCarregandoAcao(true);
     try {
-      // Remove do Supabase (online) e do IndexedDB local (pendentes que ainda não foram enviadas)
-      if (sessaoId && navigator.onLine) {
-        await supabase.from('bobinas_lidas').delete().eq('sessao_id', sessaoId).eq('lote', codigoParaRemover);
-      }
-      await db.leituras_pendentes
+      // Espera um envio em andamento terminar; senão a leitura poderia chegar ao servidor depois de excluída
+      await aguardarSincronizacao();
+      const registrosLocais = await db.leituras_pendentes
         .where('lote').equals(codigoParaRemover)
         .and(item => item.sessao_id === sessaoId)
-        .delete();
-      setBobinasLidas(bobinasLidas.filter(b => b.codigo !== codigoParaRemover));
-    } catch (erro) { abrirAlerta('Erro', 'Falha ao excluir.'); } finally { setCarregandoAcao(false); }
+        .toArray();
+      const jaEnviada = registrosLocais.length === 0 || registrosLocais.some(r => r._status === 'sincronizado');
+
+      if (jaEnviada && !navigator.onLine) {
+        abrirAlerta('Sem conexão', `A leitura ${codigoParaRemover} já foi enviada ao servidor. Conecte-se à rede para excluí-la.`);
+        return;
+      }
+      if (jaEnviada && sessaoId) {
+        const { error } = await supabase.from('bobinas_lidas').delete().eq('sessao_id', sessaoId).eq('lote', codigoParaRemover).abortSignal(sinalTimeout());
+        if (error) throw error;
+      }
+      await db.leituras_pendentes.bulkDelete(registrosLocais.map(r => r.id));
+      setBobinasLidas(prev => prev.filter(b => b.codigo !== codigoParaRemover));
+    } catch (erro) {
+      console.error(erro);
+      abrirAlerta('Erro', 'Falha ao excluir. Verifique a conexão e tente novamente.');
+    } finally { setCarregandoAcao(false); }
   }
 
   const limparDados = () => {
@@ -970,135 +1188,260 @@ function App() {
     abrirConfirmacao('Encerrar', 'Deseja parar de bipar e voltar ao início?', () => { setEtapaInventario('OCIOSO'); setModoInventario(null); setDepositoAtual(''); setTipoContagem(null); });
   };
 
-  // AUDITORIA E RELATÓRIO COM VALIDAÇÃO INTELIGENTE
-  const obterRelatorioConciliado = () => {
-    const lidasCodes = bobinasLidas.map(b => b.codigo);
-    let relatorio = [];
-
-    bobinasLidas.forEach(b => {
-      const bobinaSAP = csvBobinas.find(c => {
-        if (b.romaneio && b.romaneio !== '-') {
-          return c.romaneio === b.romaneio;
-        }
-        return c.codigo === b.codigo;
-      });
-      const isOk = !!bobinaSAP;
-      const filialFinal = b.filial || (bobinaSAP ? bobinaSAP.filial : null) || determinarFilial(b.codigo) || '-';
-
-      const endereco_sap_formatado = formatarEnderecoSAP(bobinaSAP);
-      const endereco_lido = b.endereco_lido || '-';
-
-      // Pega o nome da Rota que o operador escolheu
-      const idRotaSalvo = b.rotas || b.rota;
-      const nomeRota = rotasDisponiveis.find(r => String(r.id) === String(idRotaSalvo))?.rota || idRotaSalvo || '-';
-
-      let statusFinal = ''; let tipoFinal = '';
-      if (csvBobinas.length === 0) { statusFinal = 'Bipada (Sem SAP base)'; tipoFinal = 'sobrando'; }
-      else if (!isOk) { statusFinal = 'Sobrando (Não SAP)'; tipoFinal = 'sobrando'; }
-      else {
-        
-        // VALIDAÇÃO 1: Checa se é exatamente igual (Padrão)
-        let enderecoCorreto = (endereco_lido === endereco_sap_formatado);
-
-        // VALIDAÇÃO 2: Inteligência Cruzando [Rota]-[Gaveta] com a posição SAP
-        if (!enderecoCorreto && endereco_lido !== '-' && endereco_sap_formatado !== '-') {
-            // Extrai a gaveta da string. Ex: "Depósito: 9000 | G: A | P: 04C" -> pega o "04C"
-            const matchGaveta = endereco_lido.match(/\|\s*P:\s*([^|]+)/);
-            
-            if (matchGaveta && nomeRota !== '-') {
-                const gavetaExtraida = matchGaveta[1].trim();
-                
-                // Constrói a posição simulando como o SAP faz: "Posição: R04D-04C"
-                const posicaoCombinada = `Posição: ${nomeRota}-${gavetaExtraida}`;
-                
-                if (posicaoCombinada === endereco_sap_formatado) {
-                    enderecoCorreto = true;
-                }
-            }
-        }
-
-        if (endereco_lido !== '-' && endereco_sap_formatado !== '-' && !enderecoCorreto) {
-          statusFinal = 'Local Incorreto'; tipoFinal = 'divergencia';
-        } else { 
-          statusFinal = 'OK (Lida)'; tipoFinal = 'ok'; 
-        }
-      }
-
-      relatorio.push({
-        codigo: b.codigo, status: statusFinal, dataHora: b.dataHora, cracha: b.cracha, nome_operador: b.nome, filial: filialFinal,
-        lote: b.lote || b.codigo, romaneio: b.romaneio || (bobinaSAP ? bobinaSAP.romaneio : '-'),
-        deposito: b.deposito || (bobinaSAP ? (bobinaSAP.deposito || '-') : '-'), agrupador: bobinaSAP ? bobinaSAP.agrupador : '-',
-        endereco_lido: endereco_lido, endereco_sap: endereco_sap_formatado, material: bobinaSAP ? bobinaSAP.material : '-',
-        descricao: bobinaSAP ? bobinaSAP.descricao : '-', peso_liquido: bobinaSAP ? bobinaSAP.peso_liquido : '-',
-        largura: bobinaSAP ? bobinaSAP.largura : '-', espessura: bobinaSAP ? bobinaSAP.espessura : '-',
-        ordem_producao: bobinaSAP ? bobinaSAP.ordem_producao : '-', ordem_venda: bobinaSAP ? bobinaSAP.ordem_venda : '-',
-        cliente: bobinaSAP ? bobinaSAP.cliente : '-', nome_cliente: bobinaSAP ? bobinaSAP.nome_cliente : '-', 
-        rota: nomeRota, 
-        tipo: tipoFinal
-      });
-    });
-
-    csvBobinas.forEach(c => {
-      if (!lidasCodes.includes(c.codigo)) {
-        const filialFinal = c.filial || determinarFilial(c.codigo) || '-';
-        const endereco_sap_formatado = formatarEnderecoSAP(c);
-        relatorio.push({
-          codigo: c.codigo, status: 'Faltando (Não Bipada)', dataHora: '-', cracha: '-', nome_operador: '-', filial: filialFinal,
-          lote: c.lote || c.codigo, romaneio: c.romaneio || '-',
-          deposito: c.deposito || '-', agrupador: c.agrupador || '-', endereco_lido: '-', endereco_sap: endereco_sap_formatado,
-          material: c.material || '-', descricao: c.descricao || '-', peso_liquido: c.peso_liquido || '-', largura: c.largura || '-',
-          espessura: c.espessura || '-', ordem_producao: c.ordem_producao || '-', ordem_venda: c.ordem_venda || '-',
-          cliente: c.cliente || '-', nome_cliente: c.nome_cliente || '-', 
-          rota: '-', 
-          tipo: 'faltando'
-        });
-      }
-    });
-    return relatorio;
-  }
+  // AUDITORIA E RELATÓRIO COM VALIDAÇÃO INTELIGENTE (regras em src/lib/inventario.js)
+  // Memorizado: antes era recalculado a cada tecla digitada no campo de leitura.
+  const relatorioNaTela = useMemo(() => montarRelatorioConciliado({
+    bobinasLidas, csvBobinas, rotas: rotasDisponiveis, depositos: depositosDisponiveis
+  }), [bobinasLidas, csvBobinas, rotasDisponiveis, depositosDisponiveis]);
 
   const gerarRelatorio = () => {
-    const dados = obterRelatorioConciliado();
+    const dados = relatorioNaTela;
     if (dados.length === 0) { abrirAlerta('Vazio', 'Sem dados para gerar relatório.'); return; }
-    const limparParaCSV = (val) => {
-      if (val === '-' || !val) return '-'; let str = String(val); if (str.includes(';') || str.includes(',')) return `"${str}"`; return str;
-    };
-    
-    let csvContent = "data:text/csv;charset=utf-8,\uFEFFLote/Posicao;Romaneio;Material;Descricao;Filial;Deposito;Endereco Lido;Endereco SAP;Peso Liquido;Status;Rota;Data e Hora Leitura;Operador;Cracha\n"
-      + dados.map(e => `${limparParaCSV(e.lote)};${limparParaCSV(e.romaneio)};${limparParaCSV(e.material)};${limparParaCSV(e.descricao)};${limparParaCSV(e.filial)};${limparParaCSV(e.deposito)};${limparParaCSV(e.endereco_lido)};${limparParaCSV(e.endereco_sap)};${limparParaCSV(e.peso_liquido)};${limparParaCSV(e.status)};${limparParaCSV(e.rota)};${limparParaCSV(e.dataHora)};${limparParaCSV(e.nome_operador)};${limparParaCSV(e.cracha)}`).join("\n");
-    
-    const link = document.createElement("a"); link.href = encodeURI(csvContent); link.download = `relatorio_inventario_${new Date().getTime()}.csv`;
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    const cabecalho = 'Lote/Posicao;Romaneio;Material;Descricao;Filial;Deposito;Endereco Lido;Endereco SAP;Peso Liquido;Status;Rota;Data e Hora Leitura;Operador;Cracha';
+    const linhas = dados.map(e => [
+      e.lote, e.romaneio, e.material, e.descricao, e.filial, e.deposito, e.endereco_lido, e.endereco_sap,
+      e.peso_liquido, e.status, e.rota, e.dataHora, e.nome_operador, e.cracha
+    ].map(campoCSV).join(';'));
+    baixarCSV(`relatorio_inventario_${new Date().getTime()}.csv`, cabecalho, linhas);
   }
 
-  const relatorioNaTela = obterRelatorioConciliado();
+  // Contadores com a regra original (Esperadas = linhas da planilha). O Set só evita
+  // percorrer a planilha inteira para cada bobina lida a cada renderização.
+  const codigosEsperados = useMemo(() => new Set(csvBobinas.map(c => c.codigo)), [csvBobinas]);
   const qtdLidas = bobinasLidas.length; const qtdEsperadas = csvBobinas.length;
-  const qtdFaltam = Math.max(0, qtdEsperadas - bobinasLidas.filter(b => csvBobinas.some(c => c.codigo === b.codigo)).length);
+  const qtdFaltam = Math.max(0, qtdEsperadas - bobinasLidas.filter(b => codigosEsperados.has(b.codigo)).length);
 
-  const leiturasProcessadas = leiturasGlobais.filter(l => {
-    if (conferenciaFilters.lote && !l.codigo.includes(conferenciaFilters.lote) && (!l.romaneio || !l.romaneio.includes(conferenciaFilters.lote))) return false;
-    if (conferenciaFilters.filial && l.filial !== conferenciaFilters.filial) return false;
-    if (conferenciaFilters.deposito && l.deposito !== conferenciaFilters.deposito) return false;
-    return true;
-  }).sort((a, b) => {
-    const parseData = (str) => {
-      if (!str || str === '-') return 0;
-      const match = str.match(/(\d{2})\/(\d{2})\/(\d{4})[,\s]*(\d{2}):(\d{2}):(\d{2})/);
-      if (match) return new Date(`${match[3]}-${match[2]}-${match[1]}T${match[4]}:${match[5]}:${match[6]}`).getTime();
-      return 0;
+  // LISTA DE DATAS ÚNICAS DOS INVENTÁRIOS (ORDENADAS DA MAIS RECENTE PARA A MAIS ANTIGA)
+  const listaDatasInventarios = useMemo(() => {
+    const mapaDatas = new Map();
+    leiturasGlobais.forEach(l => {
+      if (l.dataIso && !mapaDatas.has(l.dataIso)) {
+        mapaDatas.set(l.dataIso, { dataIso: l.dataIso, dataFmt: l.dataDiaFmt, timestamp: l.timestamp });
+      }
+    });
+    return Array.from(mapaDatas.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }, [leiturasGlobais]);
+
+  // UNIDADES DOS COLABORADORES QUE FIZERAM LEITURAS (filtro da conferência)
+  const listaUnidadesOperadores = useMemo(() => {
+    const unidades = new Set(leiturasGlobais.map(l => l.unidadeOperador).filter(u => u && u !== '-'));
+    return Array.from(unidades).sort();
+  }, [leiturasGlobais]);
+
+  // LISTA DE OPERADORES ÚNICOS NAS LEITURAS
+  const listaOperadores = useMemo(() => {
+    const map = new Map();
+    leiturasGlobais.forEach(l => {
+      const crachaStr = String(l.cracha || '');
+      if (crachaStr && crachaStr !== '-' && !map.has(crachaStr)) {
+        map.set(crachaStr, { cracha: crachaStr, nome: l.nome });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.nome.localeCompare(b.nome));
+  }, [leiturasGlobais]);
+
+  // RESUMO DE INVENTÁRIOS REALIZADOS (CADA INVENTÁRIO É DEFINIDO POR DATA + COLABORADOR COM SUA PRÓPRIA KPI)
+  // A mesma bobina lida mais de uma vez no mesmo inventário conta uma vez só (as demais são "repetidas").
+  const resumoInventarios = useMemo(() => {
+    const mapa = {};
+    [...leiturasGlobais].sort((a, b) => a.timestamp - b.timestamp).forEach(l => {
+      const dataIso = l.dataIso || 'sem_data';
+      const cracha = String(l.cracha || 'sem_cracha');
+      const chave = `${dataIso}___${cracha}`;
+
+      if (!mapa[chave]) {
+        mapa[chave] = {
+          id: chave,
+          dataIso: dataIso,
+          dataFmt: l.dataDiaFmt || '-',
+          cracha: l.cracha,
+          nome: l.nome,
+          unidadeOperador: l.unidadeOperador,
+          setorOperador: l.setorOperador,
+          total: 0,
+          ok: 0,
+          sobrando: 0,
+          divergencia: 0,
+          repetidas: 0,
+          bobinas: new Set(),
+          depositos: new Set(),
+          primeiroTimestamp: l.timestamp || 0,
+          ultimoTimestamp: l.timestamp || 0,
+          primeiraHora: l.horaFmt || '-',
+          ultimaHora: l.horaFmt || '-'
+        };
+      }
+
+      const inv = mapa[chave];
+      if (inv.bobinas.has(l.chave)) {
+        inv.repetidas++;
+      } else {
+        inv.bobinas.add(l.chave);
+        inv.total++;
+        if (l.tipo === 'ok') inv.ok++;
+        else if (l.tipo === 'sobrando') inv.sobrando++;
+        else if (l.tipo === 'divergencia') inv.divergencia++;
+      }
+      if (l.deposito && l.deposito !== '-') inv.depositos.add(l.deposito);
+
+      if (l.timestamp && (!inv.primeiroTimestamp || l.timestamp < inv.primeiroTimestamp)) {
+        inv.primeiroTimestamp = l.timestamp;
+        inv.primeiraHora = l.horaFmt;
+      }
+      if (l.timestamp && (!inv.ultimoTimestamp || l.timestamp > inv.ultimoTimestamp)) {
+        inv.ultimoTimestamp = l.timestamp;
+        inv.ultimaHora = l.horaFmt;
+      }
+    });
+
+    return Object.values(mapa).sort((a, b) => b.ultimoTimestamp - a.ultimoTimestamp);
+  }, [leiturasGlobais]);
+
+  // INVENTÁRIOS FILTRADOS POR OPERADOR, DATA OU DEPÓSITO
+  const inventariosFiltrados = useMemo(() => {
+    return resumoInventarios.filter(inv => {
+      if (conferenciaFilters.operador && String(inv.cracha) !== String(conferenciaFilters.operador)) return false;
+      if (conferenciaFilters.unidade_operador && inv.unidadeOperador !== conferenciaFilters.unidade_operador) return false;
+      if (conferenciaFilters.data_leitura && inv.dataIso !== conferenciaFilters.data_leitura) return false;
+      if (conferenciaFilters.deposito && !inv.depositos.has(conferenciaFilters.deposito)) return false;
+      return true;
+    });
+  }, [resumoInventarios, conferenciaFilters]);
+
+  // FILTRA ITENS CONTADOS NO CONTEXTO ATIVO (OPERADOR, DATA DO INVENTÁRIO, DEPÓSITO, FILIAL, BUSCA)
+  // Sem filtrar por status, para que os cartões de KPI mostrem o resumo exato daquele inventário/contexto.
+  // Leituras da mesma bobina dentro do contexto: a primeira vale, as seguintes são marcadas como repetidas.
+  const itensNoContexto = useMemo(() => {
+    const filtradas = leiturasGlobais.filter(l => {
+      if (conferenciaFilters.operador && String(l.cracha) !== String(conferenciaFilters.operador)) return false;
+      if (conferenciaFilters.unidade_operador && l.unidadeOperador !== conferenciaFilters.unidade_operador) return false;
+      if (conferenciaFilters.data_leitura && l.dataIso !== conferenciaFilters.data_leitura) return false;
+      if (conferenciaFilters.deposito && l.deposito !== conferenciaFilters.deposito) return false;
+      if (conferenciaFilters.filial && l.filial !== conferenciaFilters.filial) return false;
+      const termoBusca = conferenciaFilters.lote.trim().toLowerCase();
+      if (termoBusca) {
+        const cod = String(l.codigo || '').toLowerCase();
+        const rom = String(l.romaneio || '').toLowerCase();
+        const desc = String(l.descricao || '').toLowerCase();
+        const mat = String(l.material || '').toLowerCase();
+        if (!cod.includes(termoBusca) && !rom.includes(termoBusca) && !desc.includes(termoBusca) && !mat.includes(termoBusca)) return false;
+      }
+      return true;
+    });
+
+    const vistas = new Set();
+    return filtradas.sort((a, b) => a.timestamp - b.timestamp).map(l => {
+      const repetida = vistas.has(l.chave);
+      vistas.add(l.chave);
+      return { ...l, repetida };
+    });
+  }, [leiturasGlobais, conferenciaFilters]);
+
+  // BOBINAS PENDENTES NO SAP NO CONTEXTO (DEPÓSITO, FILIAL, BUSCA)
+  // A lista já chega sem repetições entre bases (vale a importação mais recente de cada lote).
+  const faltandoNoContexto = useMemo(() => {
+    return bobinasFaltandoSap.filter(f => {
+      if (conferenciaFilters.deposito && f.deposito !== conferenciaFilters.deposito) return false;
+      if (conferenciaFilters.filial && f.filial !== conferenciaFilters.filial) return false;
+      const termoBusca = conferenciaFilters.lote.trim().toLowerCase();
+      if (termoBusca) {
+        const cod = String(f.codigo || '').toLowerCase();
+        const rom = String(f.romaneio || '').toLowerCase();
+        const desc = String(f.descricao || '').toLowerCase();
+        const mat = String(f.material || '').toLowerCase();
+        if (!cod.includes(termoBusca) && !rom.includes(termoBusca) && !desc.includes(termoBusca) && !mat.includes(termoBusca)) return false;
+      }
+      return true;
+    });
+  }, [bobinasFaltandoSap, conferenciaFilters]);
+
+  // KPIS DINÂMICOS: CALCULADOS COM BASE NO INVENTÁRIO/CONTEXTO ATIVO (COLABORADOR / DATA / DEPÓSITO)
+  const kpiConferencia = useMemo(() => {
+    const unicas = itensNoContexto.filter(l => !l.repetida);
+    return {
+      total: unicas.length,
+      repetidas: itensNoContexto.length - unicas.length,
+      ok: unicas.filter(l => l.tipo === 'ok').length,
+      sobrando: unicas.filter(l => l.tipo === 'sobrando').length,
+      divergencia: unicas.filter(l => l.tipo === 'divergencia').length,
+      faltando: faltandoNoContexto.length,
     };
-    if (conferenciaSort.field === 'Data') {
-       return conferenciaSort.order === 'asc' ? parseData(a.dataHora) - parseData(b.dataHora) : parseData(b.dataHora) - parseData(a.dataHora);
-    }
-    return 0;
-  });
+  }, [itensNoContexto, faltandoNoContexto]);
 
-  const totalPaginas = Math.ceil(leiturasProcessadas.length / ITENS_POR_PAGINA) || 1;
+  // LEITURAS PROCESSADAS (COM FILTRO DE STATUS SELECIONADO E ORDENAÇÃO)
+  const leiturasProcessadas = useMemo(() => {
+    const filtradas = itensNoContexto.filter(l => {
+      if (conferenciaStatusFilter !== 'todos' && l.tipo !== conferenciaStatusFilter) return false;
+      return true;
+    });
+
+    return filtradas.sort((a, b) => {
+      if (conferenciaSort.field === 'Lote') {
+        const cmp = String(a.codigo || '').localeCompare(String(b.codigo || ''));
+        return conferenciaSort.order === 'asc' ? cmp : -cmp;
+      }
+      if (conferenciaSort.field === 'Data') {
+        return conferenciaSort.order === 'asc' ? a.timestamp - b.timestamp : b.timestamp - a.timestamp;
+      }
+      return 0;
+    });
+  }, [itensNoContexto, conferenciaStatusFilter, conferenciaSort]);
+
+  // PAGINAÇÃO DINÂMICA
+  const totalItensAba = conferenciaTab === 'faltando'
+    ? faltandoNoContexto.length
+    : (conferenciaTab === 'inventarios' ? inventariosFiltrados.length : leiturasProcessadas.length);
+  const totalPaginas = Math.ceil(totalItensAba / ITENS_POR_PAGINA) || 1;
   const paginaCorrigida = Math.min(paginaAtual, totalPaginas);
   const leiturasPaginadas = leiturasProcessadas.slice((paginaCorrigida - 1) * ITENS_POR_PAGINA, paginaCorrigida * ITENS_POR_PAGINA);
+  const faltandoPaginadas = faltandoNoContexto.slice((paginaCorrigida - 1) * ITENS_POR_PAGINA, paginaCorrigida * ITENS_POR_PAGINA);
+  const inventariosPaginados = inventariosFiltrados.slice((paginaCorrigida - 1) * ITENS_POR_PAGINA, paginaCorrigida * ITENS_POR_PAGINA);
+
+  // EXPORTAR CONFERÊNCIA EM CSV CONFORME A ABA ATIVA
+  const exportarConferencia = () => {
+    const agora = new Date().getTime();
+
+    if (conferenciaTab === 'inventarios') {
+      if (inventariosFiltrados.length === 0) { abrirAlerta('Vazio', 'Sem dados de inventários para exportar.'); return; }
+      const cabecalho = 'Data do Inventario;Horario;Colaborador;Cracha;Total Contado;OK (No SAP);Sobra (Nao SAP);Local Incorreto;Acuracia;Depositos;Unidade Colaborador;Setor Colaborador';
+      const linhas = inventariosFiltrados.map(c => {
+        const taxa = c.total > 0 ? ((c.ok / c.total) * 100).toFixed(1) + '%' : '0%';
+        const horario = `${c.primeiraHora} as ${c.ultimaHora}`;
+        return [campoCSV(c.dataFmt), campoCSV(horario), campoCSV(c.nome), campoCSV(c.cracha), c.total, c.ok, c.sobrando, c.divergencia, taxa, campoCSV(Array.from(c.depositos).join(', ')), campoCSV(c.unidadeOperador), campoCSV(c.setorOperador)].join(';');
+      });
+      baixarCSV(`resumo_inventarios_${agora}.csv`, cabecalho, linhas);
+      return;
+    }
+
+    if (conferenciaTab === 'faltando') {
+      if (faltandoNoContexto.length === 0) { abrirAlerta('Vazio', 'Sem bobinas pendentes para exportar.'); return; }
+      const cabecalho = 'Lote;Romaneio;Material;Descricao;Filial;Deposito;Endereco SAP;Peso Liquido;Status';
+      const linhas = faltandoNoContexto.map(e => [e.lote, e.romaneio, e.material, e.descricao, e.filial, e.deposito, e.endereco_sap, e.peso_liquido, e.status].map(campoCSV).join(';'));
+      baixarCSV(`bobinas_pendentes_sap_${agora}.csv`, cabecalho, linhas);
+      return;
+    }
+
+    // Default: aba leituras
+    if (leiturasProcessadas.length === 0) { abrirAlerta('Vazio', 'Sem dados para exportar.'); return; }
+    const cabecalho = 'Lote;Romaneio;Material;Descricao;Filial;Deposito;Endereco Lido;Endereco SAP;Peso Liquido;Status;Rota;Data Leitura;Operador;Cracha;Unidade Colaborador;Setor Colaborador';
+    const linhas = leiturasProcessadas.map(e => [
+      e.lote, e.romaneio, e.material, e.descricao, e.filial, e.deposito, e.endereco_lido, e.endereco_sap, e.peso_liquido,
+      e.repetida ? `${e.status} (Repetida)` : e.status, e.rota, e.dataHora, e.nome, e.cracha, e.unidadeOperador, e.setorOperador
+    ].map(campoCSV).join(';'));
+    baixarCSV(`conferencia_leituras_${agora}.csv`, cabecalho, linhas);
+  };
 
   // IDENTIFICA A ROTA ATUAL PARA EXIBIÇÃO NO CABEÇALHO DE LEITURA ATIVA
   const nomeRotaAtiva = rotasDisponiveis.find(r => String(r.id) === String(rotaAtual))?.rota;
+
+  if (verificandoPortal) {
+    return (
+      <div className="min-vh-100 d-flex flex-column justify-content-center align-items-center gap-2" style={{ backgroundColor: '#f4f6f8' }}>
+        <div className="spinner-border text-danger" role="status"></div>
+        <span className="small text-muted">Entrando com o seu login do Portal...</span>
+      </div>
+    );
+  }
 
     if (!crachaLogado) {
     return (
@@ -1241,159 +1584,665 @@ function App() {
 
       {showConferencia && (
         <div className="modal fade show d-block vp-modal-overlay" tabIndex="-1" style={{ zIndex: 1050 }}>
-          <div className="modal-dialog modal-dialog-centered modal-xl mx-3 mx-sm-auto">
-            <div className="modal-content shadow border-0">
-              <div className="modal-header border-0 bg-dark text-white"><h5 className="modal-title fw-bold fs-6">Conferência de Leituras</h5><button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button></div>
-              <div className="modal-body p-4 fs-6 text-secondary">
-                <p className="mb-2 text-center">Operador: <strong className="text-danger">{crachaLogado}</strong><br /><span className="small text-muted">{leiturasProcessadas.length} resultados.</span></p>
-                <FilterControls filters={conferenciaFilters} onFilterChange={setConferenciaFilters} onResetFilters={() => setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '' })} sortConfig={conferenciaSort} onSortChange={setConferenciaSort} itemsCount={leiturasProcessadas.length} />
-                <div className="row g-2 mb-3 mt-1">
-                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Filial</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.filial} onChange={e => setConferenciaFilters(prev => ({ ...prev, filial: e.target.value }))}><option value="">Todas as Filiais</option><option value="1001">1001 (VA - VIDEIRA)</option><option value="1003">1003 (MA - MANAUS)</option><option value="1005">1005 (RA - RIO VERDE)</option><option value="1006">1006 (UA - UNIÃO DA VITÓRIA)</option><option value="1007">1007 (TA - 3 RIOS)</option><option value="1009">1009 (ZA - VARZEA GRANDE)</option><option value="1010">1010 (FA - BARRACÃO DO LIMA)</option></select></div>
-                  <div className="col-12 col-sm-6"><label className="form-label small fw-semibold text-secondary mb-1">Filtrar por Depósito</label><select className="form-select form-select-sm vp-input" value={conferenciaFilters.deposito} onChange={e => setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }))}><option value="">Todos os Depósitos</option>{depositosDisponiveis.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}</select></div>
+          <div className="modal-dialog modal-dialog-centered modal-xl mx-2 mx-sm-auto" style={{ maxWidth: '1140px' }}>
+            <div className="modal-content shadow border-0" style={{ borderRadius: '14px', overflow: 'hidden' }}>
+              {/* Header */}
+              <div className="modal-header border-0 text-white" style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', padding: '1rem 1.5rem' }}>
+                <div className="d-flex align-items-center gap-3 flex-wrap">
+                  <div className="d-flex align-items-center gap-2">
+                    <i className="bi bi-clipboard2-data-fill text-primary fs-4"></i>
+                    <h5 className="modal-title fw-bold fs-5 text-white mb-0">Painel de Conferência</h5>
+                  </div>
+                  {conferenciaFilters.operador ? (
+                    <span className="badge bg-primary bg-opacity-25 text-info border border-info border-opacity-25 px-3 py-1 rounded-pill" style={{ fontSize: '0.8rem' }}>
+                      <i className="bi bi-person-fill me-1"></i>
+                      {listaOperadores.find(o => String(o.cracha) === String(conferenciaFilters.operador))?.nome || `Crachá ${conferenciaFilters.operador}`}
+                    </span>
+                  ) : (
+                    <span className="badge bg-secondary bg-opacity-25 text-light border border-secondary border-opacity-25 px-3 py-1 rounded-pill" style={{ fontSize: '0.8rem' }}>
+                      <i className="bi bi-calendar3 me-1"></i> Todos os Inventários
+                    </span>
+                  )}
+                  {carregandoAcao && <span className="spinner-border spinner-border-sm text-light" role="status"></span>}
                 </div>
+                <button type="button" className="btn-close btn-close-white" onClick={() => setShowConferencia(false)}></button>
+              </div>
 
-                <div className="table-responsive border rounded d-none d-md-block" style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                  <table className="table table-hover text-center align-middle mb-0">
-                    <thead className="table-light sticky-top" style={{ top: 0, zIndex: 1 }}><tr><th className="py-2">Lote / Romaneio</th>{isAdmin && <th className="py-2">Operador</th>}<th className="py-2">Data/Hora</th></tr></thead>
-                    <tbody>
-                      {leiturasPaginadas.length === 0 ? (<tr><td colSpan={isAdmin ? 3 : 2} className="text-muted py-4">Nenhuma leitura.</td></tr>) : (
-                        Object.entries(leiturasPaginadas.reduce((acc, leitura) => {
-                          const dia = leitura.dataHora ? leitura.dataHora.substring(0, 10) : 'Data Desconhecida';
-                          const crachaStr = leitura.cracha || 'Desconhecido';
-                          const key = `${crachaStr}_${dia}`;
-                          if (!acc[key]) acc[key] = { nome: leitura.nome || crachaStr, dia: dia, leituras: [] };
-                          acc[key].leituras.push(leitura);
-                          return acc;
-                        }, {})).map(([key, grupo]) => (
-                          <React.Fragment key={key}>
-                            <tr className="table-secondary" onClick={() => toggleLoteExpandido(`grupo_${key}`)} style={{ cursor: 'pointer' }}>
-                              <td colSpan={isAdmin ? 3 : 2} className="text-start fw-bold text-dark px-4 py-2 border-bottom" style={{ backgroundColor: '#e9ecef' }}>
-                                <i className={`bi bi-chevron-${lotesExpandidos[`grupo_${key}`] ? 'down' : 'right'} me-2 text-primary`}></i>
-                                <i className="bi bi-person-badge me-2 text-primary"></i>
-                                {grupo.nome} <span className="ms-2 text-muted fw-normal" style={{ fontSize: '0.9em' }}>| <i className="bi bi-calendar3 ms-1 me-1"></i> {grupo.dia}</span> <span className="badge bg-primary rounded-pill ms-2">{grupo.leituras.length} leituras</span>
-                              </td>
-                            </tr>
-                            {lotesExpandidos[`grupo_${key}`] && grupo.leituras.map((leitura, index) => {
-                              const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
-                              return (
-                                <React.Fragment key={index}>
-                                  <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer' }}>
-                                    <td className="fw-bold text-primary text-start px-4">
-                                      <i className={`bi bi-chevron-${expandido ? 'down' : 'right'} me-2 text-secondary`}></i>
-                                      <span className="vp-mono">{leitura.codigo}</span>
-                                    </td>
-                                    {isAdmin && <td>{leitura.nome || leitura.cracha}</td>}
-                                    <td>{leitura.dataHora}</td>
-                                  </tr>
-                                  {expandido && (<tr><td colSpan={isAdmin ? 3 : 2} className="p-0 border-0"><div className="p-3 bg-light text-start border-bottom small text-dark animate__animated animate__fadeIn"><div className="row g-3">
-                                    <div className="col-12 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Material & Descrição</span><div className="vp-detail-val fw-semibold text-dark">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Agrupador</span><div className="vp-detail-val fw-semibold text-dark">{leitura.agrupador || '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Romaneio</span><div className="vp-detail-val fw-semibold text-dark">{leitura.romaneio || '-'}</div></div></div>
-                                    <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço Lido</span><div className="vp-detail-val fw-bold text-primary">{leitura.endereco_lido || '-'}</div></div></div>
-                                    <div className="col-6 col-md-6"><div className="vp-detail-block"><span className="vp-detail-label">Endereço SAP</span><div className="vp-detail-val fw-semibold text-dark">{leitura.endereco_sap || '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Peso Líquido</span><div className="vp-detail-val fw-semibold text-dark">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Dimensões</span><div className="vp-detail-val fw-semibold text-dark">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div></div>
-                                    <div className="col-6 col-md-4"><div className="vp-detail-block"><span className="vp-detail-label">Ordem Produção / Venda</span><div className="vp-detail-val fw-semibold text-dark">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div></div>
-                                    <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Cliente</span><div className="vp-detail-val fw-semibold text-dark">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div></div>
-                                    <div className="col-12"><div className="vp-detail-block"><span className="vp-detail-label">Rota</span><div className="vp-detail-val fw-semibold text-dark">{leitura.rota || '-'}</div></div></div>
-                                  </div></div></td></tr>)}
-                                </React.Fragment>
-                              );
-                            })}
-                          </React.Fragment>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+              {/* Abas de Navegação */}
+              <div className="px-3 pt-2 bg-light d-flex gap-2 border-bottom flex-wrap" style={{ backgroundColor: '#f1f5f9' }}>
+                <button
+                  className={`btn btn-sm d-flex align-items-center gap-1 rounded-top-2 border-bottom-0 fw-semibold ${conferenciaTab === 'inventarios' ? 'btn-white bg-white text-dark shadow-sm border' : 'btn-ghost text-muted'}`}
+                  style={{ padding: '0.5rem 1rem', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
+                  onClick={() => { setConferenciaTab('inventarios'); setPaginaAtual(1); }}
+                >
+                  <i className="bi bi-calendar-check-fill text-primary"></i> {isAdmin ? 'Inventários Realizados' : 'Meus Inventários'} ({inventariosFiltrados.length})
+                </button>
+                <button
+                  className={`btn btn-sm d-flex align-items-center gap-1 rounded-top-2 border-bottom-0 fw-semibold ${conferenciaTab === 'leituras' ? 'btn-white bg-white text-dark shadow-sm border' : 'btn-ghost text-muted'}`}
+                  style={{ padding: '0.5rem 1rem', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
+                  onClick={() => { setConferenciaTab('leituras'); setPaginaAtual(1); }}
+                >
+                  <i className="bi bi-box-seam-fill text-success"></i> Bobinas Bipadas ({itensNoContexto.length})
+                </button>
+                <button
+                  className={`btn btn-sm d-flex align-items-center gap-1 rounded-top-2 border-bottom-0 fw-semibold ${conferenciaTab === 'faltando' ? 'btn-white bg-white text-dark shadow-sm border' : 'btn-ghost text-muted'}`}
+                  style={{ padding: '0.5rem 1rem', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}
+                  onClick={() => { setConferenciaTab('faltando'); setPaginaAtual(1); }}
+                >
+                  <i className="bi bi-exclamation-triangle-fill text-warning"></i> Pendentes SAP ({faltandoNoContexto.length})
+                </button>
+              </div>
 
-                <div className="d-md-none" style={{ maxHeight: '60vh', overflowY: 'auto', margin: '-1rem', padding: '1rem', backgroundColor: '#f8f9fa' }}>
-                  <div className="vp-mobile-cards-list">
-                    {leiturasPaginadas.length === 0 ? (
-                        <div className="text-center text-muted p-4">Nenhuma leitura.</div>
-                    ) : (
-                        Object.entries(leiturasPaginadas.reduce((acc, leitura) => {
-                          const dia = leitura.dataHora ? leitura.dataHora.substring(0, 10) : 'Data Desconhecida';
-                          const crachaStr = leitura.cracha || 'Desconhecido';
-                          const key = `${crachaStr}_${dia}`;
-                          if (!acc[key]) acc[key] = { nome: leitura.nome || crachaStr, dia: dia, leituras: [] };
-                          acc[key].leituras.push(leitura);
-                          return acc;
-                        }, {})).map(([key, grupo]) => (
-                          <div key={key} className="mb-4">
-                            <div className="p-3 rounded mb-3 shadow-sm border bg-white position-relative overflow-hidden" onClick={() => toggleLoteExpandido(`grupo_${key}`)} style={{ cursor: 'pointer', transition: 'all 0.2s ease' }}>
-                              <div className="position-absolute start-0 top-0 bottom-0 bg-primary" style={{ width: '4px' }}></div>
-                              <div className="d-flex align-items-center w-100 ps-2">
-                                <div className="rounded-circle bg-light d-flex align-items-center justify-content-center me-3 border" style={{ width: '42px', height: '42px', flexShrink: 0 }}>
-                                  <i className="bi bi-person-fill text-secondary fs-5"></i>
-                                </div>
-                                <div className="flex-grow-1" style={{ minWidth: 0 }}>
-                                  <div className="fw-bold text-dark text-truncate mb-1" style={{ fontSize: '0.95rem' }}>
-                                    {grupo.nome}
-                                  </div>
-                                  <div className="d-flex align-items-center gap-2 flex-wrap">
-                                    <span className="badge bg-light border text-secondary fw-semibold rounded-pill px-2 py-1 d-flex align-items-center" style={{ fontSize: '0.7rem' }}>
-                                      <i className="bi bi-calendar3 me-1"></i>{grupo.dia}
-                                    </span>
-                                    <span className="badge bg-primary bg-opacity-10 text-primary fw-bold rounded-pill px-2 py-1" style={{ fontSize: '0.7rem' }}>
-                                      {grupo.leituras.length} leitura{grupo.leituras.length !== 1 ? 's' : ''}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="ms-2 text-muted" style={{ flexShrink: 0 }}>
-                                  <i className={`bi bi-chevron-${lotesExpandidos[`grupo_${key}`] ? 'up' : 'down'}`}></i>
-                                </div>
-                              </div>
-                            </div>
-                            {lotesExpandidos[`grupo_${key}`] && grupo.leituras.map((leitura, index) => {
-                              const confKey = `${leitura.codigo}_conf_${index}`; const expandido = lotesExpandidos[confKey];
-                              return (
-                                <div key={index} className={`vp-mobile-report-card ok shadow-sm border ${expandido ? 'expanded' : ''}`} onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer', padding: '1rem', marginBottom: '0.75rem', borderRadius: '0.75rem', backgroundColor: '#ffffff', position: 'relative' }}>
-                                  <div className="d-flex justify-content-between align-items-center mb-1">
-                                    <div className="d-flex align-items-center">
-                                      <i className="bi bi-box-seam me-2 text-primary"></i> 
-                                      <span className="vp-mono fw-bold text-dark fs-6">{leitura.codigo}</span>
-                                    </div>
-                                    <div className="text-muted small fw-semibold">
-                                      <i className="bi bi-clock me-1"></i>{leitura.dataHora.includes(' ') ? leitura.dataHora.split(' ')[1] : leitura.dataHora}
-                                    </div>
-                                  </div>
-                                  {!expandido && (
-                                    <div className="text-center mt-2 text-primary" style={{ fontSize: '0.75rem', opacity: 0.8 }}>
-                                      <i className="bi bi-chevron-down me-1"></i>Ver detalhes
-                                    </div>
-                                  )}
-                                  {expandido && (
-                                    <div className="vp-mobile-card-extra border-top pt-3 mt-3 animate__animated animate__fadeIn">
-                                      <div className="mb-3">
-                                        <div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Material & Descrição</div>
-                                        <div className="fw-semibold text-dark small">{leitura.material !== '-' ? leitura.material : ''} {leitura.material !== '-' && leitura.descricao !== '-' ? '-' : ''} {leitura.descricao !== '-' ? leitura.descricao : ''}</div>
-                                      </div>
-                                      <div className="row g-3">
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Agrupador</div><div className="fw-semibold text-dark small">{leitura.agrupador || '-'}</div></div>
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Romaneio</div><div className="fw-semibold text-dark small">{leitura.romaneio || '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Endereço Lido</div><div className="fw-bold text-primary small bg-primary bg-opacity-10 px-2 py-1 rounded d-inline-block">{leitura.endereco_lido || '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Endereço SAP</div><div className="fw-semibold text-dark small">{leitura.endereco_sap || '-'}</div></div>
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Peso Líquido</div><div className="fw-semibold text-dark small">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div>
-                                        <div className="col-6"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Dimensões</div><div className="fw-semibold text-dark small">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm x ${leitura.espessura} µm` : '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Ordem Prod/Venda</div><div className="fw-semibold text-dark small">OP: {leitura.ordem_producao || '-'} / OV: {leitura.ordem_venda || '-'}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Cliente</div><div className="fw-semibold text-dark small">{leitura.cliente !== '-' ? leitura.cliente : ''} {leitura.cliente !== '-' && leitura.nome_cliente !== '-' ? '-' : ''} {leitura.nome_cliente !== '-' ? leitura.nome_cliente : ''}</div></div>
-                                        <div className="col-12"><div className="text-muted text-uppercase fw-bold mb-1" style={{ fontSize: '0.65rem', letterSpacing: '0.5px' }}>Rota</div><div className="fw-semibold text-dark small">{leitura.rota || '-'}</div></div>
-                                      </div>
-                                      <div className="text-center mt-3 text-muted border-top pt-2" style={{ fontSize: '0.75rem' }}><i className="bi bi-chevron-up me-1"></i>Recolher</div>
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
+              <div className="modal-body p-0">
+                {/* 5 KPI Cards Interativos */}
+                <div className="p-3" style={{ backgroundColor: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                  <div className="row g-2">
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('todos'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? '#1e293b' : '#fff', cursor: 'pointer', transition: 'all 0.2s', border: '1px solid #e2e8f0' }}
+                        title="Ver todas as bobinas bipadas neste filtro"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? '#fff' : '#1e293b' }}>
+                          {kpiConferencia.total}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? '#94a3b8' : '#64748b' }}>
+                          Total Contado
+                        </div>
+                        {kpiConferencia.repetidas > 0 && (
+                          <div style={{ fontSize: '0.65rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'todos' ? '#cbd5e1' : '#94a3b8' }} title="Leituras repetidas da mesma bobina não entram nos totais">
+                            +{kpiConferencia.repetidas} leitura(s) repetida(s)
                           </div>
-                        ))
-                    )}
+                        )}
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('ok'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? '#15803d' : '#f0fdf4', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #22c55e', border: '1px solid #dcfce7' }}
+                        title="Ver bobinas confirmadas no SAP"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? '#fff' : '#15803d' }}>
+                          {kpiConferencia.ok}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'ok' ? '#bbf7d0' : '#15803d' }}>
+                          <i className="bi bi-check-circle-fill me-1"></i>OK / Encontrado
+                        </div>
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('sobrando'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? '#7c3aed' : '#faf5ff', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #8b5cf6', border: '1px solid #f3e8ff' }}
+                        title="Ver bobinas que não constavam no SAP"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? '#fff' : '#7c3aed' }}>
+                          {kpiConferencia.sobrando}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'sobrando' ? '#ddd6fe' : '#7c3aed' }}>
+                          <i className="bi bi-plus-circle-fill me-1"></i>Sobra (Não SAP)
+                        </div>
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('leituras'); setConferenciaStatusFilter('divergencia'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? '#b91c1c' : '#fff1f2', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #ef4444', border: '1px solid #fee2e2' }}
+                        title="Ver bobinas encontradas em gôndola/gaveta divergente"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? '#fff' : '#b91c1c' }}>
+                          {kpiConferencia.divergencia}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'leituras' && conferenciaStatusFilter === 'divergencia' ? '#fecaca' : '#b91c1c' }}>
+                          <i className="bi bi-geo-fill me-1"></i>Loc. Incorreto
+                        </div>
+                      </button>
+                    </div>
+                    <div className="col-6 col-md">
+                      <button
+                        onClick={() => { setConferenciaTab('faltando'); setConferenciaStatusFilter('faltando'); setPaginaAtual(1); }}
+                        className={`w-100 border-0 rounded-3 p-2 text-start ${conferenciaTab === 'faltando' ? 'shadow' : ''}`}
+                        style={{ background: conferenciaTab === 'faltando' ? '#b45309' : '#fffbeb', cursor: 'pointer', transition: 'all 0.2s', borderLeft: '3px solid #f59e0b', border: '1px solid #fef3c7' }}
+                        title="Ver bobinas cadastradas no SAP que ainda não foram bipadas"
+                      >
+                        <div className="fw-bold" style={{ fontSize: '1.35rem', color: conferenciaTab === 'faltando' ? '#fff' : '#b45309' }}>
+                          {carregandoPendentes ? <span className="spinner-border spinner-border-sm" role="status"></span> : kpiConferencia.faltando}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: conferenciaTab === 'faltando' ? '#fde68a' : '#b45309' }}>
+                          <i className="bi bi-exclamation-triangle-fill me-1"></i>Pendentes SAP
+                        </div>
+                      </button>
+                    </div>
                   </div>
                 </div>
-                {totalPaginas > 1 && (<div className="d-flex justify-content-between align-items-center mt-3 pt-3 border-top"><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))} disabled={paginaAtual === 1}>Anterior</button><span className="small text-muted fw-semibold">Página {paginaCorrigida} de {totalPaginas}</span><button className="vp-btn vp-btn-outline vp-btn-sm px-3" onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))} disabled={paginaAtual === totalPaginas}>Próxima</button></div>)}
+
+                {erroConferencia && (
+                  <div className="alert alert-danger rounded-0 mb-0 py-2 px-3 small d-flex justify-content-between align-items-center gap-2">
+                    <span><i className="bi bi-exclamation-octagon-fill me-1"></i>{erroConferencia}</span>
+                    <button className="btn btn-sm btn-outline-danger" onClick={() => carregarConferencia(periodoConferencia)} disabled={carregandoAcao}>Tentar de novo</button>
+                  </div>
+                )}
+
+                {/* Filtros Contextuais */}
+                <div className="p-3" style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: '#fff' }}>
+                  <div className="row g-2 align-items-end">
+                    {/* Período carregado do servidor (leituras e bases SAP importadas) */}
+                    <div className="col-6 col-sm-4 col-lg-2">
+                      <label className="form-label small fw-semibold text-secondary mb-1">
+                        <i className="bi bi-clock-history me-1"></i>Período
+                      </label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={periodoConferencia}
+                        onChange={e => alterarPeriodoConferencia(Number(e.target.value))}
+                        disabled={carregandoAcao}
+                        title="Leituras carregadas do servidor"
+                      >
+                        {PERIODOS_CONFERENCIA.map(d => <option key={d} value={d}>Últimos {d} dias</option>)}
+                      </select>
+                    </div>
+
+                    {/* Filtro Data do Inventário */}
+                    <div className="col-6 col-sm-4 col-lg-2">
+                      <label className="form-label small fw-semibold text-secondary mb-1">
+                        <i className="bi bi-calendar-event me-1"></i>Data do Inventário
+                      </label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={conferenciaFilters.data_leitura}
+                        onChange={e => {
+                          setConferenciaFilters(prev => ({ ...prev, data_leitura: e.target.value }));
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <option value="">Todas as Datas</option>
+                        {listaDatasInventarios.map(d => {
+                          const isHoje = d.dataIso === obterDataHojeIso();
+                          return (
+                            <option key={d.dataIso} value={d.dataIso}>
+                              {d.dataFmt} {isHoje ? '(Hoje)' : ''}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
+                    {/* Filtro Colaborador (visível para Admin) */}
+                    {isAdmin && (
+                      <div className="col-12 col-sm-6 col-lg-3">
+                        <label className="form-label small fw-semibold text-secondary mb-1">
+                          <i className="bi bi-person-badge me-1"></i>Colaborador / Operador
+                        </label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={conferenciaFilters.operador}
+                          onChange={e => {
+                            setConferenciaFilters(prev => ({ ...prev, operador: e.target.value }));
+                            setPaginaAtual(1);
+                          }}
+                        >
+                          <option value="">Todos os Colaboradores</option>
+                          {listaOperadores.map(op => (
+                            <option key={op.cracha} value={op.cracha}>
+                              {op.nome} (Crachá: {op.cracha})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Unidade do colaborador (cadastro do crachá), independente da filial da bobina */}
+                    {isAdmin && (
+                      <div className="col-6 col-sm-4 col-lg-2">
+                        <label className="form-label small fw-semibold text-secondary mb-1">
+                          <i className="bi bi-building me-1"></i>Unidade Colab.
+                        </label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={conferenciaFilters.unidade_operador}
+                          onChange={e => {
+                            setConferenciaFilters(prev => ({ ...prev, unidade_operador: e.target.value }));
+                            setPaginaAtual(1);
+                          }}
+                        >
+                          <option value="">Todas</option>
+                          {listaUnidadesOperadores.map(u => <option key={u} value={u}>{u}</option>)}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Filtro Depósito */}
+                    <div className="col-6 col-sm-4 col-lg-2">
+                      <label className="form-label small fw-semibold text-secondary mb-1">
+                        <i className="bi bi-box me-1"></i>Depósito
+                      </label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={conferenciaFilters.deposito}
+                        onChange={e => {
+                          setConferenciaFilters(prev => ({ ...prev, deposito: e.target.value }));
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <option value="">Todos</option>
+                        {depositosDisponiveis.map(d => <option key={d.id} value={d.id}>{d.id}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Busca Lote / Romaneio */}
+                    <div className={`col-6 col-sm-4 ${isAdmin ? 'col-lg-2' : 'col-lg-4'}`}>
+                      <label className="form-label small fw-semibold text-secondary mb-1">
+                        <i className="bi bi-search me-1"></i>Buscar Código
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm"
+                        placeholder="Lote, romaneio..."
+                        value={conferenciaFilters.lote}
+                        onChange={e => {
+                          setConferenciaFilters(prev => ({ ...prev, lote: e.target.value }));
+                          setPaginaAtual(1);
+                        }}
+                      />
+                    </div>
+
+                    {/* Botão Limpar Filtros */}
+                    <div className="col-12 col-sm-auto d-flex align-items-end">
+                      <button
+                        className="btn btn-outline-danger btn-sm w-100"
+                        title="Limpar todos os filtros"
+                        onClick={() => {
+                          setConferenciaFilters({ lote: '', data_leitura: '', filial: '', deposito: '', operador: '', unidade_operador: '' });
+                          setConferenciaStatusFilter('todos');
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <i className="bi bi-x-lg me-1"></i>Limpar
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Banner de Contexto Ativo (Data / Colaborador) */}
+                  {(conferenciaFilters.operador || conferenciaFilters.data_leitura) && (
+                    <div className="mt-3 p-2 px-3 rounded-2 d-flex justify-content-between align-items-center flex-wrap gap-2" style={{ backgroundColor: '#eff6ff', border: '1px solid #bfdbfe' }}>
+                      <div className="d-flex align-items-center gap-2 small">
+                        <i className="bi bi-info-circle-fill text-primary fs-5"></i>
+                        <span>
+                          {conferenciaFilters.data_leitura ? (
+                            <>Inventário de <strong>{listaDatasInventarios.find(d => d.dataIso === conferenciaFilters.data_leitura)?.dataFmt || conferenciaFilters.data_leitura}</strong></>
+                          ) : (
+                            <>Todas as datas</>
+                          )}
+                          {conferenciaFilters.operador && (
+                            <> · Colaborador: <strong>{listaOperadores.find(o => String(o.cracha) === String(conferenciaFilters.operador))?.nome || conferenciaFilters.operador}</strong></>
+                          )}
+                          {' · '}<strong>{itensNoContexto.length}</strong> bobinas nesta contagem
+                        </span>
+                      </div>
+                      <button
+                        className="btn btn-sm btn-link text-primary text-decoration-none p-0 fw-semibold small"
+                        onClick={() => {
+                          setConferenciaFilters(prev => ({ ...prev, operador: '', data_leitura: '' }));
+                          setConferenciaTab('inventarios');
+                          setPaginaAtual(1);
+                        }}
+                      >
+                        <i className="bi bi-arrow-counterclockwise me-1"></i>Ver todos os inventários
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* ============================================================== */}
+                {/* ABA 1: RESUMO DE INVENTÁRIOS REALIZADOS (DATA + COLABORADOR)  */}
+                {/* ============================================================== */}
+                {conferenciaTab === 'inventarios' && (
+                  <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                    <table className="table table-hover table-sm align-middle mb-0" style={{ fontSize: '0.84rem' }}>
+                      <thead style={{ position: 'sticky', top: 0, zIndex: 2, backgroundColor: '#f1f5f9' }}>
+                        <tr>
+                          <th className="py-2 px-3 text-secondary text-uppercase" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Data do Inventário</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Colaborador</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Depósitos</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Total Contado</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>OK (No SAP)</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Sobra (Não SAP)</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Loc. Incorreto</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Acurácia</th>
+                          <th className="py-2 px-3 text-secondary text-uppercase text-center" style={{ fontSize: '0.7rem', fontWeight: 700 }}>Ações</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {inventariosPaginados.length === 0 ? (
+                          <tr>
+                            <td colSpan="9" className="text-center text-muted py-5">
+                              <i className="bi bi-calendar-x fs-2 d-block mb-2 opacity-50"></i>
+                              Nenhum inventário encontrado para os filtros selecionados
+                            </td>
+                          </tr>
+                        ) : inventariosPaginados.map(inv => {
+                          const taxa = inv.total > 0 ? ((inv.ok / inv.total) * 100).toFixed(1) : 0;
+                          const isHoje = inv.dataIso === obterDataHojeIso();
+                          return (
+                            <tr key={inv.id}>
+                              <td className="py-2 px-3">
+                                <div className="d-flex align-items-center gap-2">
+                                  <span className="fw-bold text-dark">{inv.dataFmt}</span>
+                                  {isHoje && (
+                                    <span className="badge bg-success bg-opacity-25 text-success fw-bold px-2 py-0" style={{ fontSize: '0.68rem' }}>
+                                      Hoje
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-muted" style={{ fontSize: '0.72rem' }}>
+                                  <i className="bi bi-clock me-1"></i>{inv.primeiraHora} às {inv.ultimaHora}
+                                </div>
+                              </td>
+                              <td className="py-2 px-3">
+                                <div className="d-flex align-items-center gap-2">
+                                  <div className="rounded-circle bg-primary bg-opacity-10 text-primary fw-bold d-flex align-items-center justify-content-center" style={{ width: '32px', height: '32px', fontSize: '0.75rem' }}>
+                                    {obterIniciais(inv.nome)}
+                                  </div>
+                                  <div>
+                                    <div className="fw-bold text-dark">{inv.nome}</div>
+                                    <div className="text-muted" style={{ fontSize: '0.72rem' }}>Crachá: {inv.cracha}</div>
+                                    {(inv.unidadeOperador !== '-' || inv.setorOperador !== '-') && (
+                                      <div className="text-muted" style={{ fontSize: '0.7rem' }}>
+                                        <i className="bi bi-building me-1"></i>{[inv.unidadeOperador !== '-' && `Unid. ${inv.unidadeOperador}`, inv.setorOperador !== '-' && inv.setorOperador].filter(Boolean).join(' · ')}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-2 px-3 small text-muted">
+                                {Array.from(inv.depositos).join(', ') || '-'}
+                              </td>
+                              <td className="py-2 px-3 text-center fw-bold fs-6 text-dark">
+                                {inv.total}
+                                {inv.repetidas > 0 && <div className="text-muted fw-normal" style={{ fontSize: '0.68rem' }} title="Leituras repetidas da mesma bobina neste inventário">+{inv.repetidas} rep.</div>}
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className="badge bg-success bg-opacity-15 text-success fw-bold px-2 py-1" style={{ fontSize: '0.75rem' }}>
+                                  {inv.ok}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className="badge fw-bold px-2 py-1" style={{ backgroundColor: '#ede9fe', color: '#7c3aed', fontSize: '0.75rem' }}>
+                                  {inv.sobrando}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className="badge bg-danger bg-opacity-15 text-danger fw-bold px-2 py-1" style={{ fontSize: '0.75rem' }}>
+                                  {inv.divergencia}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center" style={{ minWidth: '100px' }}>
+                                <div className="fw-bold small mb-1">{taxa}%</div>
+                                <div className="progress" style={{ height: '4px' }}>
+                                  <div className="progress-bar bg-success" style={{ width: `${taxa}%` }}></div>
+                                </div>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <button
+                                  className="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-1"
+                                  onClick={() => {
+                                    setConferenciaFilters(prev => ({ ...prev, operador: String(inv.cracha), data_leitura: inv.dataIso }));
+                                    setConferenciaTab('leituras');
+                                    setPaginaAtual(1);
+                                  }}
+                                  title="Ver as bobinas contadas neste inventário específico"
+                                >
+                                  <i className="bi bi-box-seam"></i> Ver Bobinas ({inv.total})
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* ============================================================== */}
+                {/* ABA 2: BOBINAS CONTADAS (LEITURAS)                             */}
+                {/* ============================================================== */}
+                {conferenciaTab === 'leituras' && (
+                  <>
+                    {/* Tabela Desktop */}
+                    <div className="d-none d-md-block" style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                      <table className="table table-hover table-sm align-middle mb-0" style={{ fontSize: '0.82rem' }}>
+                        <thead style={{ position: 'sticky', top: 0, zIndex: 2, backgroundColor: '#f1f5f9' }}>
+                          <tr>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Lote / Romaneio</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Material</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Endereço Lido</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Endereço SAP</th>
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Status</th>
+                            {isAdmin && <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Colaborador</th>}
+                            <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Data/Hora</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {leiturasPaginadas.length === 0 ? (
+                            <tr>
+                              <td colSpan={isAdmin ? 7 : 6} className="text-center text-muted py-5">
+                                <i className="bi bi-inbox fs-3 d-block mb-2 opacity-50"></i>
+                                Nenhuma bobina encontrada para os filtros selecionados
+                              </td>
+                            </tr>
+                          ) : leiturasPaginadas.map((leitura, index) => {
+                            const confKey = `conf_tbl_${leitura.codigo}_${index}`;
+                            const expandido = lotesExpandidos[confKey];
+                            const badgeConfig = {
+                              ok: { bg: '#dcfce7', color: '#15803d', icon: 'bi-check-circle-fill', label: 'OK' },
+                              faltando: { bg: '#fef9c3', color: '#b45309', icon: 'bi-exclamation-triangle-fill', label: 'Faltando' },
+                              sobrando: { bg: '#ede9fe', color: '#7c3aed', icon: 'bi-plus-circle-fill', label: 'Sobra' },
+                              divergencia: { bg: '#fee2e2', color: '#b91c1c', icon: 'bi-geo-fill', label: 'Local Incorreto' },
+                            }[leitura.tipo] || { bg: '#f1f5f9', color: '#475569', icon: 'bi-question-circle', label: leitura.status };
+                            const rowBg = expandido ? '#f8fafc' : '#fff';
+                            return (
+                              <React.Fragment key={confKey}>
+                                <tr onClick={() => toggleLoteExpandido(confKey)} style={{ cursor: 'pointer', backgroundColor: rowBg, transition: 'background 0.15s' }}>
+                                  <td className="px-3 py-2">
+                                    <span className="vp-mono fw-bold" style={{ color: '#1e293b' }}>{leitura.codigo || '-'}</span>
+                                    {leitura.romaneio && leitura.romaneio !== '-' && <div className="text-muted" style={{ fontSize: '0.72rem' }}>ROM: {leitura.romaneio}</div>}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <div style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={leitura.descricao}>
+                                      {leitura.material !== '-' ? leitura.material : ''}{leitura.material !== '-' && leitura.descricao !== '-' ? ' · ' : ''}
+                                      <span className="text-muted">{leitura.descricao !== '-' ? leitura.descricao : '-'}</span>
+                                    </div>
+                                  </td>
+                                  <td className="px-3 py-2"><span style={{ fontSize: '0.78rem', color: '#0284c7', fontWeight: 600 }}>{leitura.endereco_lido || '-'}</span></td>
+                                  <td className="px-3 py-2"><span style={{ fontSize: '0.78rem' }}>{leitura.endereco_sap || '-'}</span></td>
+                                  <td className="px-3 py-2">
+                                    <span className="badge rounded-pill d-inline-flex align-items-center gap-1" style={{ backgroundColor: badgeConfig.bg, color: badgeConfig.color, fontSize: '0.72rem', fontWeight: 700, padding: '4px 10px', whiteSpace: 'nowrap' }}>
+                                      <i className={`bi ${badgeConfig.icon}`}></i>{badgeConfig.label}
+                                    </span>
+                                    {leitura.repetida && <span className="badge rounded-pill bg-secondary bg-opacity-25 text-secondary ms-1" style={{ fontSize: '0.68rem' }} title="Esta bobina já tinha sido lida neste contexto; não entra nos totais">Repetida</span>}
+                                  </td>
+                                  {isAdmin && (
+                                    <td className="px-3 py-2">
+                                      <div className="fw-semibold text-dark" style={{ fontSize: '0.78rem' }}>{leitura.nome || leitura.cracha || '-'}</div>
+                                      <div className="text-muted" style={{ fontSize: '0.7rem' }}>Crachá: {leitura.cracha}{leitura.unidadeOperador !== '-' ? ` · Unid. ${leitura.unidadeOperador}` : ''}</div>
+                                    </td>
+                                  )}
+                                  <td className="px-3 py-2 text-muted" style={{ whiteSpace: 'nowrap', fontSize: '0.78rem' }}>{leitura.dataHora || '-'}</td>
+                                </tr>
+                                {expandido && (
+                                  <tr style={{ backgroundColor: '#f8fafc' }}>
+                                    <td colSpan={isAdmin ? 7 : 6} className="p-0">
+                                      <div className="p-3 border-top border-bottom" style={{ fontSize: '0.8rem' }}>
+                                        <div className="row g-3">
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Peso Líquido</div><div className="fw-semibold">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Dimensões</div><div className="fw-semibold">{leitura.largura !== '-' && leitura.espessura !== '-' ? `${leitura.largura} mm × ${leitura.espessura} µm` : '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Filial da Bobina</div><div className="fw-semibold">{leitura.filial || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Depósito</div><div className="fw-semibold">{leitura.deposito || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Agrupador</div><div className="fw-semibold">{leitura.agrupador || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Rota</div><div className="fw-semibold">{leitura.rota || '-'}</div></div>
+                                          <div className="col-6 col-md-3"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>OP / OV</div><div className="fw-semibold">{leitura.ordem_producao || '-'} / {leitura.ordem_venda || '-'}</div></div>
+                                          <div className="col-12 col-md-9"><div className="text-muted" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Cliente</div><div className="fw-semibold">{[leitura.cliente, leitura.nome_cliente].filter(v => v && v !== '-').join(' — ') || '-'}</div></div>
+                                        </div>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Cards Mobile */}
+                    <div className="d-md-none" style={{ maxHeight: '58vh', overflowY: 'auto', backgroundColor: '#f8fafc', padding: '0.75rem' }}>
+                      {leiturasPaginadas.length === 0 ? (
+                        <div className="text-center text-muted p-4"><i className="bi bi-inbox fs-2 d-block mb-2 opacity-50"></i>Nenhum registro encontrado.</div>
+                      ) : leiturasPaginadas.map((leitura, index) => {
+                        const confKey = `conf_mob_${leitura.codigo}_${index}`;
+                        const expandido = lotesExpandidos[confKey];
+                        const tipoConfig = {
+                          ok: { border: '#22c55e', bg: '#f0fdf4', badgeBg: '#dcfce7', badgeColor: '#15803d', icon: 'bi-check-circle-fill', label: 'OK' },
+                          faltando: { border: '#f59e0b', bg: '#fffbeb', badgeBg: '#fef9c3', badgeColor: '#b45309', icon: 'bi-exclamation-triangle-fill', label: 'Faltando' },
+                          sobrando: { border: '#8b5cf6', bg: '#faf5ff', badgeBg: '#ede9fe', badgeColor: '#7c3aed', icon: 'bi-plus-circle-fill', label: 'Sobra' },
+                          divergencia: { border: '#ef4444', bg: '#fff1f2', badgeBg: '#fee2e2', badgeColor: '#b91c1c', icon: 'bi-geo-fill', label: 'Local Incorreto' },
+                        }[leitura.tipo] || { border: '#94a3b8', bg: '#f8fafc', badgeBg: '#f1f5f9', badgeColor: '#475569', icon: 'bi-question', label: leitura.status };
+                        return (
+                          <div key={confKey} className="mb-2 rounded-3 shadow-sm overflow-hidden" onClick={() => toggleLoteExpandido(confKey)} style={{ backgroundColor: tipoConfig.bg, border: `1px solid ${tipoConfig.border}`, cursor: 'pointer', borderLeft: `4px solid ${tipoConfig.border}` }}>
+                            <div className="p-3">
+                              <div className="d-flex justify-content-between align-items-start">
+                                <span className="vp-mono fw-bold" style={{ color: '#1e293b', fontSize: '0.9rem' }}>{leitura.codigo}</span>
+                                <span className="d-inline-flex gap-1">
+                                  {leitura.repetida && <span className="badge rounded-pill bg-secondary bg-opacity-25 text-secondary" style={{ fontSize: '0.68rem' }}>Repetida</span>}
+                                  <span className="badge rounded-pill d-inline-flex align-items-center gap-1" style={{ backgroundColor: tipoConfig.badgeBg, color: tipoConfig.badgeColor, fontSize: '0.68rem', fontWeight: 700 }}>
+                                    <i className={`bi ${tipoConfig.icon}`}></i>{tipoConfig.label}
+                                  </span>
+                                </span>
+                              </div>
+                              {leitura.descricao !== '-' && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}>{leitura.descricao}</div>}
+                              <div className="d-flex gap-2 mt-2 flex-wrap">
+                                {leitura.dataHora !== '-' && <span className="text-muted" style={{ fontSize: '0.72rem' }}><i className="bi bi-clock me-1"></i>{leitura.dataHora}</span>}
+                                {leitura.nome !== '-' && <span className="text-muted" style={{ fontSize: '0.72rem' }}><i className="bi bi-person me-1"></i>{leitura.nome}</span>}
+                              </div>
+                              {expandido && (
+                                <div className="mt-3 pt-3 border-top" style={{ borderColor: `${tipoConfig.border}66 !important` }}>
+                                  <div className="row g-2" style={{ fontSize: '0.78rem' }}>
+                                    <div className="col-12"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Endereço Lido</span><span className="fw-bold" style={{ color: '#0284c7' }}>{leitura.endereco_lido || '-'}</span></div>
+                                    <div className="col-12"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Endereço SAP</span><span className="fw-semibold">{leitura.endereco_sap || '-'}</span></div>
+                                    <div className="col-6"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Peso</span><span className="fw-semibold">{leitura.peso_liquido !== '-' ? `${leitura.peso_liquido} kg` : '-'}</span></div>
+                                    <div className="col-6"><span className="text-muted d-block" style={{ fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 700 }}>Depósito</span><span className="fw-semibold">{leitura.deposito || '-'}</span></div>
+                                    <div className="col-12 text-center mt-1"><span className="text-muted" style={{ fontSize: '0.72rem' }}><i className="bi bi-chevron-up"></i> Recolher</span></div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {/* ============================================================== */}
+                {/* ABA 3: BOBINAS PENDENTES NO SAP (FALTANDO)                     */}
+                {/* ============================================================== */}
+                {conferenciaTab === 'faltando' && (
+                  <div style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                    <div className="p-2 px-3 bg-warning bg-opacity-10 text-dark small border-bottom d-flex align-items-center gap-2">
+                      <i className="bi bi-info-circle-fill text-warning fs-5"></i>
+                      <span>
+                        Bobinas das bases <strong>SAP</strong> importadas no período ao lado que <strong>não foram bipadas</strong> por nenhum colaborador nos últimos {periodoConferencia} dias. Lote importado em mais de uma base aparece só pela importação mais recente.
+                      </span>
+                      <select
+                        className="form-select form-select-sm ms-auto"
+                        style={{ width: 'auto' }}
+                        value={periodoPendentes}
+                        onChange={e => alterarPeriodoPendentes(Number(e.target.value))}
+                        disabled={carregandoPendentes}
+                        title="Bases SAP importadas nos últimos dias"
+                      >
+                        {PERIODOS_PENDENTES.map(d => <option key={d} value={d}>Bases de {d === 1 ? 'hoje/ontem' : `${d} dias`}</option>)}
+                      </select>
+                    </div>
+                    <table className="table table-hover table-sm align-middle mb-0" style={{ fontSize: '0.82rem' }}>
+                      <thead style={{ position: 'sticky', top: 0, zIndex: 2, backgroundColor: '#f1f5f9' }}>
+                        <tr>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Lote / Romaneio</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Material</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Depósito SAP</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>Endereço SAP</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Peso</th>
+                          <th className="py-2 px-3" style={{ fontWeight: 700, color: '#475569', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '0.5px' }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {faltandoPaginadas.length === 0 && linhasBaseSapPeriodo === 0 ? (
+                          <tr>
+                            <td colSpan="6" className="text-center text-muted py-5">
+                              <i className="bi bi-database-x fs-2 d-block mb-2 opacity-50"></i>
+                              {carregandoPendentes ? 'Carregando bases SAP...' : `Nenhuma base SAP foi importada nos últimos ${periodoPendentes} dias.`}
+                            </td>
+                          </tr>
+                        ) : faltandoPaginadas.length === 0 ? (
+                          <tr>
+                            <td colSpan="6" className="text-center text-success py-5">
+                              <i className="bi bi-check-circle-fill fs-2 d-block mb-2 text-success"></i>
+                              Parabéns! Todas as bobinas esperadas no SAP para este contexto foram bipadas!
+                            </td>
+                          </tr>
+                        ) : faltandoPaginadas.map((item, idx) => (
+                          <tr key={`faltando_${item.codigo}_${idx}`}>
+                            <td className="px-3 py-2">
+                              <span className="vp-mono fw-bold text-dark">{item.codigo}</span>
+                              {item.romaneio && item.romaneio !== '-' && <div className="text-muted" style={{ fontSize: '0.72rem' }}>ROM: {item.romaneio}</div>}
+                            </td>
+                            <td className="px-3 py-2">
+                              <div style={{ maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.descricao}>
+                                {item.material !== '-' ? item.material : ''}{item.material !== '-' && item.descricao !== '-' ? ' · ' : ''}
+                                <span className="text-muted">{item.descricao !== '-' ? item.descricao : '-'}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2"><span className="badge bg-light text-dark border">{item.deposito || '-'}</span></td>
+                            <td className="px-3 py-2"><span style={{ fontSize: '0.78rem' }}>{item.endereco_sap || '-'}</span></td>
+                            <td className="px-3 py-2 text-muted">{item.peso_liquido !== '-' ? `${item.peso_liquido} kg` : '-'}</td>
+                            <td className="px-3 py-2">
+                              <span className="badge bg-warning bg-opacity-25 text-dark fw-bold px-2 py-1">
+                                <i className="bi bi-clock-history me-1"></i>Pendente
+                              </span>
+                              {item.dataImportIso && <div className="text-muted" style={{ fontSize: '0.68rem' }}>base de {item.dataImportIso.split('-').reverse().join('/')}</div>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Paginação */}
+                {totalPaginas > 1 && (
+                  <div className="d-flex justify-content-between align-items-center px-3 py-2" style={{ borderTop: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                    <button className="btn btn-sm btn-outline-secondary" onClick={() => setPaginaAtual(prev => Math.max(prev - 1, 1))} disabled={paginaAtual === 1}>
+                      <i className="bi bi-chevron-left"></i> Anterior
+                    </button>
+                    <span className="small text-muted fw-semibold">Página {paginaCorrigida} de {totalPaginas}</span>
+                    <button className="btn btn-sm btn-outline-secondary" onClick={() => setPaginaAtual(prev => Math.min(prev + 1, totalPaginas))} disabled={paginaAtual === totalPaginas}>
+                      Próxima <i className="bi bi-chevron-right"></i>
+                    </button>
+                  </div>
+                )}
               </div>
-              <div className="modal-footer border-0 justify-content-center pb-4"><button type="button" className="vp-btn vp-btn-dark w-100 w-sm-auto" onClick={() => setShowConferencia(false)}>Fechar</button></div>
+
+              {/* Footer */}
+              <div className="modal-footer border-0 justify-content-between px-4 pb-4" style={{ backgroundColor: '#f8fafc', borderTop: '1px solid #e2e8f0' }}>
+                <button type="button" className="btn btn-outline-success d-flex align-items-center gap-2" onClick={exportarConferencia} title="Exportar dados filtrados para CSV">
+                  <i className="bi bi-download"></i> Exportar CSV
+                </button>
+                <button type="button" className="vp-btn vp-btn-dark" onClick={() => setShowConferencia(false)}>Fechar</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1402,7 +2251,7 @@ function App() {
       <div className="container px-3 px-md-0 pt-2 pb-5" style={{ maxWidth: '800px', width: '100%' }}>
         <Header />
         <div className="vp-operator-card animate__animated animate__fadeIn mb-4">
-          <div className="vp-operator-info"><div className="vp-operator-avatar">{obterIniciais(nomeLogado)}</div><div><span className="vp-micro-label" style={{ margin: 0 }}>Operador Logado</span><h4 className="vp-operator-name">{nomeLogado}</h4><span className="vp-operator-badge"><i className="bi bi-person-badge"></i> {crachaLogado}</span></div></div>
+          <div className="vp-operator-info"><div className="vp-operator-avatar">{obterIniciais(nomeLogado)}</div><div><span className="vp-micro-label" style={{ margin: 0 }}>Operador Logado</span><h4 className="vp-operator-name">{nomeLogado}</h4><span className="vp-operator-badge"><i className="bi bi-person-badge"></i> {crachaLogado}</span>{(perfilLogado.unidade || perfilLogado.setor) && <div className="text-muted mt-1" style={{ fontSize: '0.75rem' }}><i className="bi bi-building me-1"></i>{[perfilLogado.unidade && `Unidade ${perfilLogado.unidade}`, perfilLogado.setor].filter(Boolean).join(' · ')}</div>}</div></div>
           <div className="vp-operator-actions"><button className="vp-btn vp-btn-outline" onClick={abrirConferenciaAdmin} disabled={carregandoAcao}><i className="bi bi-list-check"></i> Conferência</button><button className="vp-btn vp-btn-ghost-danger" onClick={fazerLogout} disabled={carregandoAcao}><i className="bi bi-box-arrow-right"></i> Sair</button></div>
         </div>
 
@@ -1574,6 +2423,11 @@ function App() {
                       <span className="badge vp-badge-online" title="Online — todas as leituras sincronizadas">
                         <span className="vp-badge-dot vp-badge-dot-online"></span>
                         Online
+                      </span>
+                    )}
+                    {errorCount > 0 && (
+                      <span className="badge bg-danger" title="Leituras recusadas pelo servidor. Toque para tentar enviar de novo." onClick={reenviarComErro} style={{ cursor: 'pointer' }}>
+                        <i className="bi bi-exclamation-triangle-fill me-1"></i>{errorCount} com erro — reenviar
                       </span>
                     )}
                     {modoInventario === 'COM_ENDERECO' ? (

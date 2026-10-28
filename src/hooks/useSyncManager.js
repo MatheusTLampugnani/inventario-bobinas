@@ -1,76 +1,50 @@
 // src/hooks/useSyncManager.js
 // Hook de Sincronização Offline-First.
 // Monitora a conectividade de rede e sincroniza automaticamente
-// as leituras pendentes no IndexedDB com o Supabase quando a conexão é restaurada.
-import { useState, useEffect, useCallback, useRef } from 'react';
+// as leituras pendentes no IndexedDB com o Supabase (ver src/sync.js).
+import { useState, useEffect, useCallback } from 'react';
 import db from '../db';
-import { supabase } from '../supabase';
+import { sincronizar } from '../sync';
+
+const INTERVALO_RETENTATIVA_MS = 30000;
 
 /**
  * useSyncManager
  *
- * @returns {object} { isOnline, pendingCount, syncNow }
+ * @returns {object} { isOnline, pendingCount, errorCount, syncNow, reenviarComErro }
  *   - isOnline: boolean — true se o navegador detecta conexão de rede
- *   - pendingCount: number — número de leituras na fila aguardando sincronização
+ *   - pendingCount: number — leituras na fila aguardando sincronização
+ *   - errorCount: number — leituras recusadas pelo servidor (não bloqueiam a fila)
  *   - syncNow: async function — dispara uma sincronização imediata (chamada após cada bipagem)
+ *   - reenviarComErro: async function — devolve as leituras com erro para a fila e sincroniza
  */
 export function useSyncManager() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingCount, setPendingCount] = useState(0);
-  // Ref para evitar sincronizações simultâneas
-  const isSyncing = useRef(false);
+  const [errorCount, setErrorCount] = useState(0);
 
-  // Atualiza o contador de pendências a partir do IndexedDB
   const refreshPendingCount = useCallback(async () => {
-    const count = await db.leituras_pendentes.where('_status').equals('pendente').count();
-    setPendingCount(count);
+    const [pendentes, comErro] = await Promise.all([
+      db.leituras_pendentes.where('_status').equals('pendente').count(),
+      db.leituras_pendentes.where('_status').equals('erro').count(),
+    ]);
+    setPendingCount(pendentes);
+    setErrorCount(comErro);
   }, []);
 
-  // Sincroniza todas as leituras pendentes com o Supabase
   const syncNow = useCallback(async () => {
-    if (isSyncing.current || !navigator.onLine) {
-      await refreshPendingCount();
-      return;
-    }
-
-    isSyncing.current = true;
-
     try {
-      const pendentes = await db.leituras_pendentes
-        .where('_status').equals('pendente')
-        .sortBy('_criado_em');
-
-      if (pendentes.length === 0) {
-        await refreshPendingCount();
-        return;
-      }
-
-      // Prepara o payload — remove os campos internos do Dexie antes de enviar ao Supabase
-      const payload = pendentes.map(({ id, _status, _criado_em, ...dado }) => dado);
-
-      const { error } = await supabase.from('bobinas_lidas').insert(payload);
-
-      if (error) {
-        // Não altera o status para não reprocessar em loop em caso de erro de schema
-        console.error('[SyncManager] Erro ao sincronizar com Supabase:', error);
-      } else {
-        // Marca todas como sincronizadas
-        const ids = pendentes.map(p => p.id);
-        await db.leituras_pendentes
-          .where('id').anyOf(ids)
-          .modify({ _status: 'sincronizado' });
-
-        console.log(`[SyncManager] ${pendentes.length} leitura(s) sincronizada(s) com sucesso.`);
-      }
-    } catch (err) {
-      console.error('[SyncManager] Erro inesperado na sincronização:', err);
+      if (navigator.onLine) await sincronizar();
     } finally {
-      isSyncing.current = false;
       await refreshPendingCount();
     }
   }, [refreshPendingCount]);
 
-  // Listener de conectividade — sincroniza automaticamente ao voltar online
+  const reenviarComErro = useCallback(async () => {
+    await db.leituras_pendentes.where('_status').equals('erro').modify({ _status: 'pendente', _erro: undefined });
+    await syncNow();
+  }, [syncNow]);
+
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
@@ -80,21 +54,31 @@ export function useSyncManager() {
       setIsOnline(false);
       refreshPendingCount();
     };
+    // Celular volta do bolso / app volta para frente: tenta enviar o que ficou na fila
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') syncNow();
+    };
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    document.addEventListener('visibilitychange', handleVisibility);
 
-    // Verifica pendências ao montar o componente
-    refreshPendingCount();
+    // Retentativa periódica: navigator.onLine pode ser true com Wi-Fi sem internet,
+    // então uma falha não pode depender só do evento 'online' para ser retomada.
+    const intervalo = setInterval(() => {
+      if (navigator.onLine) syncNow();
+    }, INTERVALO_RETENTATIVA_MS);
 
-    // Tenta sincronizar no início da sessão (captura falhas anteriores)
-    if (navigator.onLine) syncNow();
+    // Captura pendências de sessões anteriores logo ao abrir o app
+    syncNow();
 
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      clearInterval(intervalo);
     };
   }, [syncNow, refreshPendingCount]);
 
-  return { isOnline, pendingCount, syncNow };
+  return { isOnline, pendingCount, errorCount, syncNow, reenviarComErro };
 }

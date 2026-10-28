@@ -16,12 +16,23 @@ import time
 
 app = FastAPI()
 
-# 6. Configuração de CORS Permissiva
+# 6. CORS restrito às origens do sistema.
+# Em produção o frontend chama /drone-api pelo próprio Nginx (mesma origem), então o CORS só
+# importa para desenvolvimento. Outras origens podem ser liberadas pela variável CORS_ORIGINS
+# (lista separada por vírgula). Não usamos cookies: allow_credentials fica desligado.
+CORS_ORIGINS_PADRAO = [
+    "https://imobilizados.tailbba2c4.ts.net",
+    "http://localhost:5173",
+    "https://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", ",".join(CORS_ORIGINS_PADRAO)).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -37,7 +48,11 @@ async def health_check():
 # 1. Proteção de Acesso (Autenticação baseada em API Key)
 API_KEY_NAME = "X-API-KEY"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-API_KEY = os.environ.get("API_KEY", "videplast_segredo_padrao_2026")
+API_KEY_PADRAO = "videplast_segredo_padrao_2026"
+API_KEY = os.environ.get("API_KEY", API_KEY_PADRAO)
+if API_KEY == API_KEY_PADRAO:
+    print("[SEGURANÇA] API_KEY não definida: usando a chave padrão, que está publicada no código. "
+          "Defina a variável de ambiente API_KEY no servidor.")
 
 async def verificar_api_key(request: Request, api_key: str = Security(api_key_header)):
     if request.method == "OPTIONS":
@@ -59,11 +74,49 @@ DIR_VIDEOS_DRONE = os.path.join(DIR_ATUAL, "videos_drone")
 if not os.path.exists(DIR_VIDEOS_DRONE):
     os.makedirs(DIR_VIDEOS_DRONE)
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+
 # Gerenciador global em memória para tarefas de IA
 TAREFAS_DRONE = {}
 
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# Quantos vídeos são processados ao mesmo tempo. Os demais esperam na fila ("na_fila"),
+# em vez de disputarem CPU/RAM até derrubar o servidor.
+MAX_TAREFAS_SIMULTANEAS = max(1, int(os.environ.get("MAX_TAREFAS_SIMULTANEAS", "1")))
+SEMAFORO_TAREFAS = threading.Semaphore(MAX_TAREFAS_SIMULTANEAS)
+
+# Tarefas concluídas ficam disponíveis para consulta por este tempo e depois são descartadas
+RETENCAO_TAREFAS_SEGUNDOS = 2 * 60 * 60
+
+
+def _limpar_tarefas_antigas():
+    limite = time.time() - RETENCAO_TAREFAS_SEGUNDOS
+    for task_id, tarefa in list(TAREFAS_DRONE.items()):
+        if tarefa.get("status") in ("concluido", "erro") and tarefa.get("finalizado_em", 0) < limite:
+            TAREFAS_DRONE.pop(task_id, None)
+
+
+def _registrar_tarefa(caminho_video: str, eh_temporario: bool) -> str:
+    _limpar_tarefas_antigas()
+    task_id = str(uuid.uuid4())
+    TAREFAS_DRONE[task_id] = {
+        "status": "na_fila",
+        "porcentagem": 0,
+        "total_encontrados": 0
+    }
+    threading.Thread(
+        target=_executar_com_fila,
+        args=(task_id, caminho_video, eh_temporario),
+        daemon=True
+    ).start()
+    return task_id
+
+
+def _executar_com_fila(task_id: str, caminho_video: str, eh_temporario: bool):
+    with SEMAFORO_TAREFAS:
+        TAREFAS_DRONE[task_id]["status"] = "processando"
+        _executar_processamento_background(task_id, caminho_video, eh_temporario)
+    TAREFAS_DRONE.get(task_id, {})["finalizado_em"] = time.time()
 
 # ============================================================
 # Motor de IA v2 — Resolução Nativa + Tiles + Paralelismo
@@ -102,7 +155,7 @@ def _decodificar_rapido(img_gray):
 def _decodificar_completo(img_gray):
     """Decodificação completa com todos os filtros. Para uso nas tiles."""
     codigos = set()
-    
+
     # 1. Gray direto
     try:
         for r in zxingcpp.read_barcodes(img_gray):
@@ -210,6 +263,7 @@ def _executar_processamento_background(task_id: str, caminho_video: str, eh_temp
         cap = cv2.VideoCapture(caminho_video)
         if not cap.isOpened():
             TAREFAS_DRONE[task_id] = {
+                "finalizado_em": time.time(),
                 "status": "erro",
                 "erro": "Não foi possível abrir o arquivo de vídeo."
             }
@@ -237,10 +291,10 @@ def _executar_processamento_background(task_id: str, caminho_video: str, eh_temp
 
         # ThreadPoolExecutor para processar frames em paralelo (IO-bound pelo decode do ZXing)
         max_workers = min(4, os.cpu_count() or 2)
-        
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
-            
+
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
@@ -265,15 +319,21 @@ def _executar_processamento_background(task_id: str, caminho_video: str, eh_temp
                 frame_anterior_cinza = frame_cinza
 
                 if processar:
-                    # Submete o frame para processamento paralelo
-                    future = executor.submit(_processar_frame_worker, frame.copy(), codigos_lock, codigos_encontrados)
+                    # Limita o backlog: cada frame pendente ocupa memória (um frame 4K tem ~25 MB).
+                    # Se os workers estão atrasados, a leitura do vídeo espera em vez de acumular frames.
+                    while len(futures) >= max_workers * 2:
+                        concluidos, pendentes = wait(futures, return_when=FIRST_COMPLETED)
+                        for f in concluidos:
+                            try:
+                                f.result()
+                            except Exception as e:
+                                print(f"[IA v2 Worker Error] {e}")
+                        futures = list(pendentes)
+
+                    # O frame não é reutilizado pelo laço (cap.read devolve um novo array), dispensa cópia
+                    future = executor.submit(_processar_frame_worker, frame, codigos_lock, codigos_encontrados)
                     futures.append(future)
                     frames_processados += 1
-
-                    # Limita o backlog de futures para não estourar memória
-                    if len(futures) > max_workers * 3:
-                        done_futures = [f for f in futures if f.done()]
-                        futures = [f for f in futures if not f.done()]
 
                 frame_idx += 1
                 for _ in range(frames_para_pular - 1):
@@ -296,6 +356,7 @@ def _executar_processamento_background(task_id: str, caminho_video: str, eh_temp
         print(f"[IA v2] Frames processados: {frames_processados} de {total_frames} ({frames_processados/max(1,total_frames)*100:.1f}%)")
 
         TAREFAS_DRONE[task_id] = {
+            "finalizado_em": time.time(),
             "status": "concluido",
             "sucesso": True,
             "porcentagem": 100,
@@ -310,6 +371,7 @@ def _executar_processamento_background(task_id: str, caminho_video: str, eh_temp
     except Exception as e:
         print(f"[IA Task Error] Erro no processamento em background: {e}")
         TAREFAS_DRONE[task_id] = {
+            "finalizado_em": time.time(),
             "status": "erro",
             "erro": str(e)
         }
@@ -327,10 +389,10 @@ class ProcessarLocalPayload(BaseModel):
 def listar_videos_locais(api_key: str = Security(verificar_api_key)):
     if not os.path.exists(DIR_VIDEOS_DRONE):
         os.makedirs(DIR_VIDEOS_DRONE)
-    
+
     EXTENSOES_PERMITIDAS = {".mp4", ".mov", ".avi", ".lrf"}
     arquivos = []
-    
+
     for f in os.listdir(DIR_VIDEOS_DRONE):
         ext = os.path.splitext(f)[1].lower()
         if ext in EXTENSOES_PERMITIDAS:
@@ -344,7 +406,7 @@ def listar_videos_locais(api_key: str = Security(verificar_api_key)):
                     "tamanho_mb": tamanho_mb,
                     "data_modificacao": data_mod
                 })
-    
+
     return {
         "caminho_pasta": DIR_VIDEOS_DRONE,
         "total": len(arquivos),
@@ -364,31 +426,19 @@ def processar_video_drone_local(
 ):
     nome_seguro = os.path.basename(payload.filename)
     caminho_completo = os.path.abspath(os.path.join(DIR_VIDEOS_DRONE, nome_seguro))
-    
+
     if not caminho_completo.startswith(os.path.abspath(DIR_VIDEOS_DRONE)):
         raise HTTPException(status_code=400, detail="Caminho de arquivo inválido.")
-    
+
     if not os.path.exists(caminho_completo):
         raise HTTPException(status_code=404, detail=f"Arquivo '{nome_seguro}' não encontrado na pasta {DIR_VIDEOS_DRONE}.")
-    
-    task_id = str(uuid.uuid4())
-    TAREFAS_DRONE[task_id] = {
-        "status": "processando",
-        "porcentagem": 0,
-        "total_encontrados": 0
-    }
-    
-    t = threading.Thread(
-        target=_executar_processamento_background,
-        args=(task_id, caminho_completo, False),
-        daemon=True
-    )
-    t.start()
+
+    task_id = _registrar_tarefa(caminho_completo, False)
 
     return {
         "sucesso": True,
         "task_id": task_id,
-        "status": "processando"
+        "status": TAREFAS_DRONE[task_id]["status"]
     }
 
 @app.post("/api/processar-drone")
@@ -401,23 +451,23 @@ def processar_video_drone(
     extensao = extensao.lower()
     if extensao not in EXTENSOES_PERMITIDAS:
         raise HTTPException(
-            status_code=400, 
-            detail="Formato de arquivo não permitido. Apenas .mp4, .mov e .avi são aceitos."
+            status_code=400,
+            detail="Formato de arquivo não permitido. Apenas .mp4, .mov, .avi e .lrf são aceitos."
         )
 
     LIMITE_TAMANHO_BYTES = 600 * 1024 * 1024  # 600MB
     if file.size and file.size > LIMITE_TAMANHO_BYTES:
         raise HTTPException(
-            status_code=413, 
+            status_code=413,
             detail="Arquivo muito grande. O tamanho máximo permitido é 600MB."
         )
 
     pasta_temp = os.path.join(DIR_ATUAL, "temp_processamento")
     if not os.path.exists(pasta_temp):
         os.makedirs(pasta_temp)
-        
+
     temp_filename = os.path.join(pasta_temp, f"temp_{uuid.uuid4()}{extensao}")
-    
+
     try:
         tamanho_acumulado = 0
         with open(temp_filename, "wb") as buffer:
@@ -431,31 +481,27 @@ def processar_video_drone(
                     if os.path.exists(temp_filename):
                         os.remove(temp_filename)
                     raise HTTPException(
-                        status_code=413, 
+                        status_code=413,
                         detail="Arquivo excede o limite permitido de 600MB."
                     )
                 buffer.write(chunk)
 
-        task_id = str(uuid.uuid4())
-        TAREFAS_DRONE[task_id] = {
-            "status": "processando",
-            "porcentagem": 0,
-            "total_encontrados": 0
-        }
-        
-        t = threading.Thread(
-            target=_executar_processamento_background,
-            args=(task_id, temp_filename, True),
-            daemon=True
-        )
-        t.start()
+        task_id = _registrar_tarefa(temp_filename, True)
 
         return {
             "sucesso": True,
             "task_id": task_id,
-            "status": "processando"
+            "status": TAREFAS_DRONE[task_id]["status"]
         }
 
+    except HTTPException:
+        # Ex.: 413 (arquivo grande demais) — devolve o código original, não um 500 genérico
+        if os.path.exists(temp_filename):
+            try:
+                os.remove(temp_filename)
+            except Exception:
+                pass
+        raise
     except Exception as e:
         if os.path.exists(temp_filename):
             try:

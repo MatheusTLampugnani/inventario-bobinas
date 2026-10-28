@@ -6,3 +6,5 @@ temp_*
 *.onnx
 .git
 .gitignore
+videos_drone/
+temp_processamento/

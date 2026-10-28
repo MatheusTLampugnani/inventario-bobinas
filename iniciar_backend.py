@@ -113,12 +113,13 @@ else:
             print(f"⚠️ Erro ao atualizar .env: {e}")
 
     # C) Atualiza ProcessadorDrone.jsx
+    trocas_url = 0
     drone_file = os.path.join("src", "components", "ProcessadorDrone.jsx")
     if os.path.exists(drone_file):
         try:
             with open(drone_file, "r", encoding="utf-8") as f:
                 content = f.read()
-            content = re.sub(
+            content, trocas_url = re.subn(
                 r'const URL_ATUAL_FIXA = "https://[a-zA-Z0-9-]+\.trycloudflare\.com";',
                 f'const URL_ATUAL_FIXA = "{cloudflare_url}";',
                 content
@@ -132,6 +133,10 @@ else:
     # D) Automatiza o Git Commit e Push
     print("\n🔄 Sincronizando com GitHub / Render (Git Commit & Push)...")
     try:
+        # Só comita se a URL do túnel foi de fato trocada. Sem isso o script comitava e enviava
+        # ao master qualquer alteração em andamento no ProcessadorDrone.jsx.
+        if not trocas_url:
+            raise RuntimeError("ProcessadorDrone.jsx não usa URL do Cloudflare (rota /drone-api do Nginx); commit automático ignorado.")
         subprocess.run(["git", "add", "src/components/ProcessadorDrone.jsx", "cloudflare_url.txt"], check=True)
         res_commit = subprocess.run(["git", "commit", "-m", f"chore: atualiza URL do tunel Cloudflare para {cloudflare_url}"], capture_output=True, text=True)
         

@@ -2,23 +2,25 @@
   "name": "Inventário de Bobinas",
   "short_name": "Inv. Bobinas",
   "description": "Sistema de inventário de bobinas Videplast",
-  "start_url": "/",
+  "start_url": "/bobinas/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#ffffff",
   "orientation": "portrait",
   "icons": [
     {
-      "src": "/pwa-192x192.png",
+      "src": "/bobinas/pwa-192x192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/pwa-512x512.png",
+      "src": "/bobinas/pwa-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "scope": "/bobinas/",
+  "id": "/bobinas/"
 }
